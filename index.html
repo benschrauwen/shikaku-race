@@ -177,7 +177,7 @@ button, input { font: inherit; color: inherit; }
       <aside class="how">
         <div class="board" id="demo" aria-hidden="true"></div>
         <p><strong>Split the grid into rectangles.</strong> Each rectangle holds exactly one number, and its area equals that number. Drag to draw. Tap a rectangle to remove it.</p>
-        <p>Everyone gets the same puzzle when everyone is ready. You see each other's progress, never each other's boards.</p>
+        <p>Everyone gets the same puzzle when everyone is ready. You see each other's progress, never each other's boards. The first to finish wins and ends the round.</p>
       </aside>
     </div>
   </section>
@@ -203,7 +203,7 @@ button, input { font: inherit; color: inherit; }
       </div>
       <div class="timer" id="timer" role="timer">0:00.0</div>
       <ul class="lanes" id="lanes"></ul>
-      <button class="btn primary" id="again" hidden>Play again</button>
+      <button class="btn primary" id="again" hidden>Back to lobby</button>
     </aside>
   </section>
 </main>
@@ -553,8 +553,18 @@ function onPeers(peers) {
   syncSize();
   considerGame();
   syncRoster();
+  stopIfWon();
   considerHosting();
   render();
+}
+
+// The first finish ends the round for everyone still solving.
+function stopIfWon() {
+  if ((S.phase !== 'playing' && S.phase !== 'countdown') || !winnerOf()) return;
+  S.finalMs = S.phase === 'playing' ? performance.now() - S.t0 : 0;
+  S.phase = 'done';
+  S.drag = null; S.anchor = null;
+  publish();
 }
 
 function syncSize() {
@@ -645,13 +655,15 @@ function syncRoster() {
     seen.add(p.peer);
     S.roster.set(p.peer, { peer: p.peer, name: p.name, pct: p.pct, ms: p.ms, gaveUp: p.gaveUp, left: false, me: false });
   }
-  for (const r of S.roster.values()) if (!r.me && !seen.has(r.peer)) r.left = true;
+  // Once the round is over, heading back to the lobby is not leaving: keep the result as it stood.
+  if (!roundOver()) for (const r of S.roster.values()) if (!r.me && !seen.has(r.peer)) r.left = true;
   if (S.selfPeer) S.roster.set(S.selfPeer, { peer: S.selfPeer, name: S.name || 'Player', pct: S.pct, ms: S.ms, gaveUp: S.gaveUp, left: false, me: true });
 }
 
 function roundOver() {
   if (!S.game) return false;
-  return [...S.roster.values()].every(r => r.ms != null || r.gaveUp || r.left);
+  const rows = [...S.roster.values()];
+  return rows.some(r => r.ms != null) || (rows.length > 0 && rows.every(r => r.gaveUp || r.left));
 }
 function winnerOf() {
   const done = [...S.roster.values()].filter(r => r.ms != null).sort((a, b) => a.ms - b.ms || (a.peer < b.peer ? -1 : 1));
@@ -684,10 +696,10 @@ function place(a, b) {
   afterEdit();
 }
 
-function backToLobby(ready) {
+function backToLobby() {
   clearInterval(S.ticker);
   S.game = null; S.puzzle = null; S.rects = []; S.undo = []; S.pct = 0; S.ms = null; S.gaveUp = false;
-  S.phase = 'lobby'; S.ready = ready; S.roster = new Map();
+  S.phase = 'lobby'; S.ready = false; S.roster = new Map();
   $('timer').textContent = '0:00.0';
   publish();
   render();
@@ -843,7 +855,10 @@ function renderGame() {
   $('tools').hidden = S.phase !== 'playing';
   $('undo').disabled = !S.undo.length;
   $('clear').disabled = !S.rects.length;
-  if (S.phase === 'done') $('timer').textContent = fmt(S.finalMs);
+  if (S.phase === 'done') {
+    const win = winnerOf();
+    $('timer').textContent = fmt(win ? win.ms : S.finalMs);
+  }
   renderVerdict();
   renderLanes();
 }
@@ -851,7 +866,6 @@ function renderGame() {
 function renderVerdict() {
   const v = $('verdict'), head = $('verdict-head'), sub = $('verdict-sub'), again = $('again');
   const over = roundOver(), win = winnerOf();
-  const mine = S.ms != null;
   if (over) {
     v.hidden = false;
     if (win) {
@@ -863,19 +877,12 @@ function renderVerdict() {
       sub.textContent = 'Nobody finished this board.';
     }
     again.hidden = false;
-    again.textContent = 'Play again';
   } else if (S.phase === 'done') {
     const left = [...S.roster.values()].filter(r => r.ms == null && !r.gaveUp && !r.left).length;
     v.hidden = false;
-    head.textContent = mine ? (win && win.me ? 'You finished first' : 'Finished') : 'You gave up';
-    sub.textContent = `${win && !win.me ? win.name + ' won in ' + fmt(win.ms) + '. ' : ''}Still solving: ${left}.`;
+    head.textContent = 'You gave up';
+    sub.textContent = `Still solving: ${left}.`;
     again.hidden = false;
-    again.textContent = 'Back to lobby';
-  } else if (win) {
-    v.hidden = false;
-    head.textContent = `${win.name} wins`;
-    sub.textContent = `${fmt(win.ms)}. Finish to set your own time.`;
-    again.hidden = true;
   } else {
     v.hidden = true;
     again.hidden = true;
@@ -995,7 +1002,7 @@ $('quit').onclick = () => {
   render();
 };
 
-$('again').onclick = () => backToLobby(roundOver());
+$('again').onclick = backToLobby;
 $('ready').onclick = () => {
   S.ready = !S.ready;
   publish();
