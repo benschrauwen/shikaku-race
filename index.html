@@ -842,10 +842,12 @@ function renderLobby() {
 
 function renderGame() {
   const board = $('board');
-  const key = JSON.stringify([S.puzzle.seed, S.phase === 'countdown', S.rects]);
+  // Once someone has won, everyone sees the solved board. Puzzles have one solution, so it is the winner's.
+  const shown = S.phase === 'done' && winnerOf() ? S.puzzle.solution : S.rects;
+  const key = JSON.stringify([S.puzzle.seed, S.phase === 'countdown', shown]);
   if (board.dataset.key !== key) {
     board.dataset.key = key;
-    drawBoard(board, S.puzzle, S.rects, S.phase !== 'countdown');
+    drawBoard(board, S.puzzle, shown, S.phase !== 'countdown');
   }
   board.classList.toggle('live', S.phase === 'playing');
   drawOverlay();
