@@ -226,9 +226,10 @@ button, input { font: inherit; color: inherit; }
 // --- puzzle ---
 // Everything here is deterministic from (seed, n): every player must build the identical board.
 const SIZES = [
-  { n: 7, label: 'Quick', area: 10 },
-  { n: 10, label: 'Standard', area: 14 },
-  { n: 14, label: 'Long', area: 18 },
+  { n: 7, label: 'Quick', area: 10, long: 5, modes: ['race'] },
+  { n: 10, label: 'Standard', area: 14, long: 6, modes: ['race', 'shared'] },
+  { n: 14, label: 'Long', area: 18, long: 6, modes: ['race', 'shared'] },
+  { n: 18, label: 'Huge', area: 20, long: 7, modes: ['shared'] },
 ];
 
 function rng32(a) {
@@ -240,34 +241,75 @@ function rng32(a) {
   };
 }
 
-function carve(n, rand, maxArea) {
+// Fills empty cells in random order, so no direction is favoured. Filling row by row always leaves
+// room below but not beside, which produces mostly tall bars.
+function carve(n, rand, maxArea, maxLong) {
   const used = new Uint8Array(n * n), rects = [];
-  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) {
-    if (used[r * n + c]) continue;
-    let maxW = 0;
-    while (c + maxW < n && !used[r * n + c + maxW]) maxW++;
-    const options = [];
+  const order = Array.from({ length: n * n }, (_, i) => i);
+  for (let i = order.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [order[i], order[j]] = [order[j], order[i]];
+  }
+  for (const x of order) {
+    if (used[x]) continue;
+    const r = Math.floor(x / n), c = x % n, options = [];
     let total = 0;
-    for (let w = 1; w <= maxW; w++) for (let h = 1; r + h <= n; h++) {
+    for (let h = 1; h <= maxLong; h++) for (let w = 1; w <= maxLong; w++) {
       const a = w * h;
-      if (a > maxArea) break;
-      if (a < 2) continue;
-      const weight = (a >= 4 ? 3 : 1) * (Math.max(w, h) > 5 ? .3 : 1);
-      options.push({ w, h, weight });
-      total += weight;
+      if (a < 2 || a > maxArea) continue;
+      const weight = a * (Math.min(w, h) === 1 && Math.max(w, h) >= 4 ? .35 : 1);
+      for (let r1 = Math.max(0, r - h + 1); r1 <= r && r1 + h <= n; r1++)
+        for (let c1 = Math.max(0, c - w + 1); c1 <= c && c1 + w <= n; c1++) {
+          let free = true;
+          for (let y = r1; y < r1 + h && free; y++) for (let z = c1; z < c1 + w; z++) if (used[y * n + z]) { free = false; break; }
+          if (!free) continue;
+          options.push({ r1, c1, r2: r1 + h - 1, c2: c1 + w - 1, weight });
+          total += weight;
+        }
     }
-    let pick = { w: 1, h: 1 };
+    let pick = { r1: r, c1: c, r2: r, c2: c };
     let roll = rand() * total;
     for (const o of options) { pick = o; roll -= o.weight; if (roll <= 0) break; }
-    for (let y = r; y < r + pick.h; y++) for (let x = c; x < c + pick.w; x++) used[y * n + x] = 1;
-    rects.push({ r1: r, c1: c, r2: r + pick.h - 1, c2: c + pick.w - 1 });
+    for (let y = pick.r1; y <= pick.r2; y++) for (let z = pick.c1; z <= pick.c2; z++) used[y * n + z] = 1;
+    rects.push({ r1: pick.r1, c1: pick.c1, r2: pick.r2, c2: pick.c2 });
   }
-  // Carving row by row favours the top left, so mirror half the boards.
-  const flipR = rand() < .5, flipC = rand() < .5;
-  return rects.map(q => ({
-    r1: flipR ? n - 1 - q.r2 : q.r1, r2: flipR ? n - 1 - q.r1 : q.r2,
-    c1: flipC ? n - 1 - q.c2 : q.c1, c2: flipC ? n - 1 - q.c1 : q.c2,
-  }));
+  return absorbSingles(rects, rand, maxArea, maxLong);
+}
+
+// A lone cell is a free move, so fold most of them into a neighbour: whole if the two form a
+// rectangle, otherwise by slicing off the neighbour's edge strip that lines up with the cell.
+function absorbSingles(rects, rand, maxArea, maxLong) {
+  const size = q => (q.r2 - q.r1 + 1) * (q.c2 - q.c1 + 1);
+  const long = q => Math.max(q.r2 - q.r1, q.c2 - q.c1) + 1;
+  const hull = (a, b) => ({ r1: Math.min(a.r1, b.r1), c1: Math.min(a.c1, b.c1), r2: Math.max(a.r2, b.r2), c2: Math.max(a.c2, b.c2) });
+  const fits = q => size(q) <= maxArea && long(q) <= maxLong;
+  for (const cell of rects.filter(q => size(q) === 1)) {
+    const touching = rects.filter(q => q !== cell && hull(q, cell).r2 - hull(q, cell).r1 + 1 <= (q.r2 - q.r1 + 1) + (q.c1 <= cell.c1 && cell.c2 <= q.c2 ? 1 : 0)
+      && hull(q, cell).c2 - hull(q, cell).c1 + 1 <= (q.c2 - q.c1 + 1) + (q.r1 <= cell.r1 && cell.r2 <= q.r2 ? 1 : 0)
+      && ((q.c1 <= cell.c1 && cell.c1 <= q.c2) || (q.r1 <= cell.r1 && cell.r1 <= q.r2)));
+    const whole = touching.filter(q => size(hull(q, cell)) === size(q) + 1 && fits(hull(q, cell)));
+    if (whole.length) {
+      const q = whole[Math.floor(rand() * whole.length)];
+      rects.splice(rects.indexOf(q), 1);
+      rects[rects.indexOf(cell)] = hull(q, cell);
+      continue;
+    }
+    const slices = [];
+    for (const q of touching) {
+      const above = q.r2 < cell.r1 || q.r1 > cell.r1;
+      const ends = above ? [[q.c1, { ...q, c1: q.c1 + 1 }], [q.c2, { ...q, c2: q.c2 - 1 }]] : [[q.r1, { ...q, r1: q.r1 + 1 }], [q.r2, { ...q, r2: q.r2 - 1 }]];
+      for (const [line, rest] of ends) {
+        if (line !== (above ? cell.c1 : cell.r1) || size(rest) < 2) continue;
+        const strip = above ? { ...q, c1: line, c2: line } : { ...q, r1: line, r2: line };
+        if (fits(hull(strip, cell))) slices.push({ q, rest, joined: hull(strip, cell) });
+      }
+    }
+    if (!slices.length) continue;
+    const pick = slices[Math.floor(rand() * slices.length)];
+    rects[rects.indexOf(pick.q)] = pick.rest;
+    rects[rects.indexOf(cell)] = pick.joined;
+  }
+  return rects;
 }
 
 // Counts solutions up to `limit`. Spends at most `budget` search nodes, so the answer never depends on machine speed.
@@ -320,10 +362,10 @@ function countSolutions(n, clues, limit, budget) {
 }
 
 function generate(seed, n) {
-  const rand = rng32(seed), maxArea = (SIZES.find(s => s.n === n) || { area: Math.max(6, n + 2) }).area;
+  const rand = rng32(seed), size = SIZES.find(s => s.n === n) || { area: Math.max(6, n + 2), long: Math.max(3, n - 1) };
   let last = null;
   for (let attempt = 0; attempt < 400; attempt++) {
-    const solution = carve(n, rand, maxArea);
+    const solution = carve(n, rand, size.area, size.long);
     for (let tries = 0; tries < 4; tries++) {
       const clues = solution.map(q => {
         const h = q.r2 - q.r1 + 1, w = q.c2 - q.c1 + 1;
@@ -927,11 +969,21 @@ function pickerButton(group, value, label, note, choose) {
 
 function renderLobby() {
   const sizes = $('sizes'), modes = $('modes');
-  if (!sizes.children.length) for (const s of SIZES) {
-    pickerButton(sizes, s.n, s.label, s.n + '×' + s.n, () => S.size !== s.n && (S.size = s.n));
+  if (sizes.dataset.mode !== S.mode) {
+    sizes.dataset.mode = S.mode;
+    sizes.replaceChildren();
+    for (const s of SIZES) if (s.modes.includes(S.mode)) {
+      pickerButton(sizes, s.n, s.label, s.n + '×' + s.n, () => S.size !== s.n && (S.size = s.n));
+    }
   }
   if (!modes.children.length) for (const m of MODES) {
-    pickerButton(modes, m.id, m.label, m.note, () => S.mode !== m.id && (S.mode = m.id));
+    pickerButton(modes, m.id, m.label, m.note, () => {
+      if (S.mode === m.id) return false;
+      S.mode = m.id;
+      // Not every size exists in every mode: 7×7 moves up to 10×10, 18×18 down to 14×14.
+      if (!SIZES.find(s => s.n === S.size).modes.includes(m.id)) S.size = m.id === 'shared' ? 10 : 14;
+      return true;
+    });
   }
   for (const b of sizes.children) {
     b.setAttribute('aria-pressed', String(+b.dataset.value === S.size));
