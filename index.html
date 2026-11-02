@@ -53,6 +53,7 @@ button, input { font: inherit; color: inherit; }
 .room-row .btn { flex: none; }
 .sizes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .sizes button { border: 3px solid var(--rule); margin-left: -3px; background: transparent; padding: 8px 6px; cursor: pointer; display: grid; gap: 0; }
+.sizes.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .sizes button:first-child { margin-left: 0; }
 .sizes button b { font-weight: 800; }
 .sizes button span { font: 500 12px var(--mono); color: var(--muted); }
@@ -87,6 +88,13 @@ button, input { font: inherit; color: inherit; }
 .rect.valid.red { background: var(--red); }
 .rect.valid.blue { background: var(--blue); }
 .rect.valid.yellow { background: var(--yellow); }
+.rect.fresh { animation: claim .35s ease-out; }
+@keyframes claim { from { transform: scale(.82); opacity: .4; } to { transform: none; opacity: 1; } }
+.board.locked { cursor: not-allowed; }
+.flash {
+  position: absolute; left: 5px; right: 5px; bottom: 5px; z-index: 6; padding: 8px 12px; pointer-events: none;
+  background: var(--ink); color: var(--yellow); font-weight: 700; text-align: center;
+}
 .rect.bad {
   border: 2px dashed var(--ink);
   background: repeating-linear-gradient(45deg, transparent 0 5px, rgba(17, 18, 22, .16) 5px 7px);
@@ -141,7 +149,7 @@ button, input { font: inherit; color: inherit; }
   .lane { padding-block: 6px; gap: 3px; }
   .track { height: 10px; }
 }
-@media (prefers-reduced-motion: reduce) { .fill { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .fill { transition: none; } .rect.fresh { animation: none; } }
 </style>
 </head>
 <body>
@@ -163,6 +171,10 @@ button, input { font: inherit; color: inherit; }
           <input id="name" maxlength="20" autocomplete="off" spellcheck="false">
         </div>
         <div class="field">
+          <span class="label" id="mode-label">Game (shared with the room)</span>
+          <div class="sizes two" id="modes" role="group" aria-labelledby="mode-label"></div>
+        </div>
+        <div class="field">
           <span class="label" id="size-label">Board (shared with the room)</span>
           <div class="sizes" id="sizes" role="group" aria-labelledby="size-label"></div>
         </div>
@@ -176,8 +188,8 @@ button, input { font: inherit; color: inherit; }
       </div>
       <aside class="how">
         <div class="board" id="demo" aria-hidden="true"></div>
-        <p><strong>Split the grid into rectangles.</strong> Each rectangle holds exactly one number, and its area equals that number. Drag to draw. Tap a rectangle to remove it.</p>
-        <p>Everyone gets the same puzzle when everyone is ready. You see each other's progress, never each other's boards. The first to finish wins and ends the round.</p>
+        <p><strong>Split the grid into rectangles.</strong> Each rectangle holds exactly one number, and its area equals that number. Drag to draw.</p>
+        <p id="how-mode"></p>
       </aside>
     </div>
   </section>
@@ -188,6 +200,7 @@ button, input { font: inherit; color: inherit; }
         <div class="board" id="board" tabindex="0" role="application"
              aria-label="Shikaku board. Arrow keys move, Space starts and ends a rectangle, Delete removes one, Z undoes."></div>
         <div class="count" id="count" hidden></div>
+        <div class="flash" id="flash" aria-live="polite" hidden></div>
       </div>
       <div class="tools" id="tools">
         <button class="btn" id="undo">Undo</button>
@@ -508,24 +521,33 @@ function soloNet() {
 }
 
 // --- game state ---
+const MODES = [
+  { id: 'race', label: 'Race', note: 'Own boards, first to finish',
+    how: "Everyone gets the same puzzle and their own board. Tap a rectangle to remove it. You see each other's progress, never each other's boards. The first to finish wins and ends the round." },
+  { id: 'shared', label: 'Shared board', note: 'One board, most squares',
+    how: "Everyone plays on one board and claims rectangles in their own colour. A rectangle that fits its number but isn't part of the solution locks you out for 3 seconds. When the board is full, whoever holds the most squares wins." },
+];
+const LOCK_MS = 3000;
 const PALETTE = ['#1d62c4', '#d52b1e', '#e0b400', '#1f8a5b', '#7a3e9d', '#e8762b', '#0e9aa7', '#c2317e'];
 const $ = id => document.getElementById(id);
 const S = {
   net: null, noRoomReason: null, settled: 0, code: '',
   peers: [], selfPeer: null,
   name: '', ready: false, phase: 'lobby', away: document.hidden,
-  size: 10, sizeAt: 0,
+  size: 10, mode: 'race', sizeAt: 0,
   game: null, puzzle: null, rects: [], undo: [], pct: 0, ms: null, gaveUp: false,
   countEnd: 0, t0: 0, roster: new Map(), hostTimer: null, ticker: null, finalMs: 0,
   drag: null, cursor: { r: 0, c: 0 }, anchor: null,
+  claims: new Map(), seenAt: new Map(), lockUntil: 0, flash: null,
 };
 
 function publish() {
   if (!S.net) return;
   S.net.presence({
-    name: S.name || 'Player', phase: S.phase, ready: S.ready, away: S.away, size: S.size, sizeAt: S.sizeAt,
-    game: S.game ? { id: S.game.id, seed: S.game.seed, size: S.game.size } : null,
+    name: S.name || 'Player', phase: S.phase, ready: S.ready, away: S.away, size: S.size, mode: S.mode, sizeAt: S.sizeAt,
+    game: S.game ? { id: S.game.id, seed: S.game.seed, size: S.game.size, mode: S.game.mode } : null,
     pct: S.pct, ms: S.ms, gaveUp: S.gaveUp,
+    claims: isShared() ? [...S.claims].map(([i, c]) => [i, c.tag, c.t]) : null,
   });
 }
 
@@ -539,8 +561,12 @@ function readPeer(p) {
     name: (typeof x.name === 'string' && x.name.trim().slice(0, 20)) || 'Player',
     ready: x.ready === true, away: x.away === true, gaveUp: x.gaveUp === true,
     size: SIZES.some(s => s.n === x.size) ? x.size : 10,
+    mode: x.mode === 'shared' ? 'shared' : 'race',
+    claims: Array.isArray(x.claims)
+      ? x.claims.slice(0, 400).filter(c => Array.isArray(c) && Number.isInteger(c[0]) && c[0] >= 0 && typeof c[1] === 'string' && Number.isFinite(c[2]) && c[2] >= 0)
+      : [],
     sizeAt: Number.isFinite(x.sizeAt) ? x.sizeAt : 0,
-    game: validGame ? { id: g.id.slice(0, 80), seed: g.seed, size: g.size } : null,
+    game: validGame ? { id: g.id.slice(0, 80), seed: g.seed, size: g.size, mode: g.mode === 'shared' ? 'shared' : 'race' } : null,
     pct: Number.isFinite(x.pct) ? Math.max(0, Math.min(100, x.pct)) : 0,
     ms: Number.isFinite(x.ms) && x.ms > 0 ? x.ms : null,
   };
@@ -552,15 +578,16 @@ function onPeers(peers) {
   if (me) S.selfPeer = me.peer;
   syncSize();
   considerGame();
+  mergeRemoteClaims();
   syncRoster();
-  stopIfWon();
+  stopIfOver();
   considerHosting();
   render();
 }
 
-// The first finish ends the round for everyone still solving.
-function stopIfWon() {
-  if ((S.phase !== 'playing' && S.phase !== 'countdown') || !winnerOf()) return;
+// A race ends at the first finish, a shared board when it is full.
+function stopIfOver() {
+  if ((S.phase !== 'playing' && S.phase !== 'countdown') || !roundOver()) return;
   S.finalMs = S.phase === 'playing' ? performance.now() - S.t0 : 0;
   S.phase = 'done';
   S.drag = null; S.anchor = null;
@@ -570,8 +597,10 @@ function stopIfWon() {
 function syncSize() {
   for (const p of S.peers) {
     if (p.me || !p.phase) continue;
-    if (p.sizeAt > S.sizeAt && p.size !== S.size) { S.size = p.size; S.sizeAt = p.sizeAt; publish(); }
-    else if (p.sizeAt > S.sizeAt) S.sizeAt = p.sizeAt;
+    if (p.sizeAt <= S.sizeAt) continue;
+    const changed = p.size !== S.size || p.mode !== S.mode;
+    S.size = p.size; S.mode = p.mode; S.sizeAt = p.sizeAt;
+    if (changed) publish();
   }
 }
 
@@ -600,7 +629,7 @@ function considerHosting() {
   S.hostTimer = setTimeout(() => {
     S.hostTimer = null;
     if (S.phase !== 'lobby' || !S.ready || !allReady()) return;
-    adopt({ id: S.selfPeer + '.' + Math.floor(Math.random() * 1e9).toString(36), seed: Math.floor(Math.random() * 2147483647), size: S.size });
+    adopt({ id: S.selfPeer + '.' + Math.floor(Math.random() * 1e9).toString(36), seed: Math.floor(Math.random() * 2147483647), size: S.size, mode: S.mode });
   }, Math.max(700, S.settled - Date.now()));
 }
 
@@ -622,6 +651,7 @@ function adopt(game) {
   S.rects = []; S.undo = []; S.pct = 0; S.ms = null; S.gaveUp = false; S.drag = null; S.anchor = null;
   S.cursor = { r: 0, c: 0 };
   S.roster = new Map();
+  S.claims = new Map(); S.seenAt = new Map(); S.lockUntil = 0; S.flash = null;
   S.phase = 'countdown';
   if (fresh) S.countEnd = performance.now() + 3000;
   S.ready = false;
@@ -645,6 +675,7 @@ function tick() {
     }
   }
   if (S.phase === 'playing') $('timer').textContent = fmt(performance.now() - S.t0);
+  renderFlash();
 }
 
 function syncRoster() {
@@ -663,11 +694,106 @@ function syncRoster() {
 function roundOver() {
   if (!S.game) return false;
   const rows = [...S.roster.values()];
-  return rows.some(r => r.ms != null) || (rows.length > 0 && rows.every(r => r.gaveUp || r.left));
+  const decided = isShared() ? S.claims.size === S.puzzle.clues.length : rows.some(r => r.ms != null);
+  return decided || (rows.length > 0 && rows.every(r => r.gaveUp || r.left));
 }
 function winnerOf() {
+  if (isShared()) {
+    const top = leaders();
+    return top.length === 1 ? top[0] : null;
+  }
   const done = [...S.roster.values()].filter(r => r.ms != null).sort((a, b) => a.ms - b.ms || (a.peer < b.peer ? -1 : 1));
   return done[0] || null;
+}
+
+// --- shared board ---
+// Claims are a merge-only set, gossiped in full: every player converges on the same owners
+// whatever order messages arrive in, and a player who leaves keeps the squares they won.
+function isShared() { return !!S.game && S.game.mode === 'shared'; }
+function tagOf(peer) { return String(peer).slice(0, 8); }
+
+function mergeRemoteClaims() {
+  if (!isShared()) return;
+  const myTag = tagOf(S.selfPeer);
+  let changed = false;
+  for (const p of S.peers) {
+    if (p.me || !p.game || p.game.id !== S.game.id) continue;
+    for (const [i, rawTag, t] of p.claims) {
+      if (i >= S.puzzle.clues.length) continue;
+      const tag = rawTag.slice(0, 8), cur = S.claims.get(i);
+      // The earlier claim wins, timed from each player's own start. Equal times go to the lower id.
+      if (cur && (cur.t < t || (cur.t === t && cur.tag <= tag))) continue;
+      if (cur && cur.tag === myTag) flash(`${nameOfTag(tag)} claimed that one first.`, 2000);
+      S.claims.set(i, { tag, t });
+      changed = true;
+    }
+  }
+  if (changed) { refreshShare(); publish(); }
+}
+
+function areaByTag() {
+  const areas = new Map();
+  for (const [i, c] of S.claims) areas.set(c.tag, (areas.get(c.tag) || 0) + S.puzzle.clues[i].a);
+  return areas;
+}
+function refreshShare() {
+  S.pct = Math.floor((areaByTag().get(tagOf(S.selfPeer)) || 0) / (S.puzzle.n * S.puzzle.n) * 100);
+}
+function nameOfTag(tag) {
+  const row = [...S.roster.values()].find(r => tagOf(r.peer) === tag);
+  return row ? row.name : 'Someone';
+}
+function leaders() {
+  if (!roundOver()) return [];
+  const areas = areaByTag(), rows = [...S.roster.values()];
+  const top = Math.max(0, ...rows.map(r => areas.get(tagOf(r.peer)) || 0));
+  return top ? rows.filter(r => (areas.get(tagOf(r.peer)) || 0) === top) : [];
+}
+function endTime() {
+  if (S.claims.size === S.puzzle.clues.length) return Math.max(...[...S.claims.values()].map(c => c.t));
+  return S.finalMs;
+}
+
+function flash(msg, ms) {
+  S.flash = { msg, until: performance.now() + ms };
+  renderFlash();
+}
+function renderFlash() {
+  const el = $('flash'), now = performance.now();
+  const locked = S.phase === 'playing' && now < S.lockUntil;
+  const text = locked
+    ? `Not part of the solution. Locked for ${Math.ceil((S.lockUntil - now) / 1000)}s.`
+    : S.flash && now < S.flash.until ? S.flash.msg : '';
+  if (el.textContent !== text) el.textContent = text;
+  el.hidden = !text;
+  $('board').classList.toggle('locked', locked);
+}
+
+function tryClaim(a, b) {
+  const now = performance.now();
+  if (now < S.lockUntil) return;
+  const q = { r1: Math.min(a.r, b.r), c1: Math.min(a.c, b.c), r2: Math.max(a.r, b.r), c2: Math.max(a.c, b.c) };
+  const taken = [...S.claims.keys()].some(i => {
+    const x = S.puzzle.solution[i];
+    return !(x.r2 < q.r1 || x.r1 > q.r2 || x.c2 < q.c1 || x.c1 > q.c2);
+  });
+  if (taken) return flash('Those squares are already claimed.', 1600);
+  if (!isValid(S.puzzle, q)) {
+    if (q.r1 !== q.r2 || q.c1 !== q.c2) flash('A rectangle needs one number, with an area that matches it.', 1600);
+    return;
+  }
+  const i = S.puzzle.solution.findIndex(x => x.r1 === q.r1 && x.c1 === q.c1 && x.r2 === q.r2 && x.c2 === q.c2);
+  if (i < 0) {
+    S.lockUntil = now + LOCK_MS;
+    renderFlash();
+    return;
+  }
+  S.claims.set(i, { tag: tagOf(S.selfPeer), t: Math.max(1, Math.round(now - S.t0)) });
+  refreshShare();
+  publish();
+  syncRoster();
+  stopIfOver();
+  render();
 }
 
 function afterEdit() {
@@ -686,6 +812,7 @@ function afterEdit() {
 }
 
 function place(a, b) {
+  if (isShared()) return tryClaim(a, b);
   const q = { r1: Math.min(a.r, b.r), c1: Math.min(a.c, b.c), r2: Math.max(a.r, b.r), c2: Math.max(a.c, b.c) };
   const single = q.r1 === q.r2 && q.c1 === q.c2;
   const hit = S.rects.find(x => a.r >= x.r1 && a.r <= x.r2 && a.c >= x.c1 && a.c <= x.c2);
@@ -700,6 +827,8 @@ function backToLobby() {
   clearInterval(S.ticker);
   S.game = null; S.puzzle = null; S.rects = []; S.undo = []; S.pct = 0; S.ms = null; S.gaveUp = false;
   S.phase = 'lobby'; S.ready = false; S.roster = new Map();
+  S.claims = new Map(); S.seenAt = new Map(); S.lockUntil = 0; S.flash = null;
+  renderFlash();
   $('timer').textContent = '0:00.0';
   publish();
   render();
@@ -713,16 +842,19 @@ function fillOf(q, seed) {
   return x < 58 ? '' : x < 72 ? 'red' : x < 86 ? 'blue' : 'yellow';
 }
 
-function drawBoard(el, puz, rects, showClues) {
+// `paint` colours a rectangle by its owner on a shared board; otherwise colours follow the Mondrian scheme.
+function drawBoard(el, puz, rects, showClues, paint) {
   el.style.setProperty('--n', puz.n);
   const kids = [], fills = [];
   for (const q of rects) {
     const d = document.createElement('div');
-    const ok = isValid(puz, q), fill = ok ? fillOf(q, puz.seed) : '';
-    d.className = 'rect ' + (ok ? 'valid ' + fill : 'bad');
+    const ok = isValid(puz, q), fill = ok && !paint ? fillOf(q, puz.seed) : '';
+    const owner = paint ? paint(q) : null;
+    d.className = 'rect ' + (ok ? 'valid ' + fill : 'bad') + (owner && owner.fresh ? ' fresh' : '');
     d.style.gridArea = `${q.r1 + 1}/${q.c1 + 1}/${q.r2 + 2}/${q.c2 + 2}`;
+    if (owner) d.style.background = owner.color;
     kids.push(d);
-    fills.push({ q, dark: ok && (fill === 'red' || fill === 'blue') });
+    fills.push({ q, dark: owner ? owner.dark : ok && (fill === 'red' || fill === 'blue') });
   }
   if (showClues) for (const k of puz.clues) {
     const d = document.createElement('div');
@@ -773,31 +905,43 @@ function lobbyStatus() {
     const list = names.length > 2 ? `${names.slice(0, 2).join(', ')} and ${names.length - 2} more` : names.join(' and ');
     return `Waiting for ${list} to click Ready.`;
   }
+  if (!S.ready) return 'Click Ready to start.';
   if (!allReady()) return 'A round is running. You will start when another player joins you or it ends.';
   return 'Everyone is ready. Starting.';
 }
 
+function pickerButton(group, value, label, note, choose) {
+  const b = document.createElement('button');
+  b.dataset.value = value;
+  const t = document.createElement('b'); t.textContent = label;
+  const u = document.createElement('span'); u.textContent = note;
+  b.append(t, u);
+  b.onclick = () => {
+    if (!choose()) return;
+    S.sizeAt = Math.max(S.sizeAt, ...S.peers.map(p => p.sizeAt)) + 1;
+    publish();
+    render();
+  };
+  group.append(b);
+}
+
 function renderLobby() {
-  const sizes = $('sizes');
+  const sizes = $('sizes'), modes = $('modes');
   if (!sizes.children.length) for (const s of SIZES) {
-    const b = document.createElement('button');
-    b.dataset.n = s.n;
-    const t = document.createElement('b'); t.textContent = s.label;
-    const u = document.createElement('span'); u.textContent = s.n + '×' + s.n;
-    b.append(t, u);
-    b.onclick = () => {
-      if (S.size === s.n) return;
-      S.size = s.n;
-      S.sizeAt = Math.max(S.sizeAt, ...S.peers.map(p => p.sizeAt)) + 1;
-      publish();
-      render();
-    };
-    sizes.append(b);
+    pickerButton(sizes, s.n, s.label, s.n + '×' + s.n, () => S.size !== s.n && (S.size = s.n));
+  }
+  if (!modes.children.length) for (const m of MODES) {
+    pickerButton(modes, m.id, m.label, m.note, () => S.mode !== m.id && (S.mode = m.id));
   }
   for (const b of sizes.children) {
-    b.setAttribute('aria-pressed', String(+b.dataset.n === S.size));
+    b.setAttribute('aria-pressed', String(+b.dataset.value === S.size));
     b.disabled = S.ready;
   }
+  for (const b of modes.children) {
+    b.setAttribute('aria-pressed', String(b.dataset.value === S.mode));
+    b.disabled = S.ready;
+  }
+  $('how-mode').textContent = MODES.find(m => m.id === S.mode).how;
   const list = [...S.peers].sort((a, b) => (a.peer < b.peer ? -1 : 1));
   if (!list.length) list.push({ peer: 'me', me: true });
   $('players').replaceChildren(...list.map((p, i) => {
@@ -818,7 +962,7 @@ function renderLobby() {
     const st = document.createElement('span');
     const ready = p.me ? S.ready : p.ready;
     if (!p.me && (p.phase === 'playing' || p.phase === 'countdown')) {
-      st.className = 'state racing'; st.textContent = 'racing ' + Math.round(p.pct) + '%';
+      st.className = 'state racing'; st.textContent = 'playing ' + Math.round(p.pct) + '%';
     } else if (!p.me && p.phase === 'done') {
       st.className = 'state'; st.textContent = 'on results';
     } else if (ready) {
@@ -843,11 +987,19 @@ function renderLobby() {
 function renderGame() {
   const board = $('board');
   // Once someone has won, everyone sees the solved board. Puzzles have one solution, so it is the winner's.
-  const shown = S.phase === 'done' && winnerOf() ? S.puzzle.solution : S.rects;
-  const key = JSON.stringify([S.puzzle.seed, S.phase === 'countdown', shown]);
+  const shared = isShared();
+  const owners = shared ? claimOwners() : null;
+  const shown = shared ? owners.map(o => S.puzzle.solution[o.i])
+    : S.phase === 'done' && winnerOf() ? S.puzzle.solution : S.rects;
+  const key = JSON.stringify([S.puzzle.seed, S.phase === 'countdown', shared ? owners : shown]);
   if (board.dataset.key !== key) {
     board.dataset.key = key;
-    drawBoard(board, S.puzzle, shown, S.phase !== 'countdown');
+    const paint = shared ? q => {
+      const o = owners[shown.indexOf(q)], now = performance.now();
+      if (!S.seenAt.has(o.i)) S.seenAt.set(o.i, now);
+      return { color: o.color, dark: o.color !== PALETTE[2], fresh: now - S.seenAt.get(o.i) < 400 };
+    } : null;
+    drawBoard(board, S.puzzle, shown, S.phase !== 'countdown', paint);
   }
   board.classList.toggle('live', S.phase === 'playing');
   drawOverlay();
@@ -855,14 +1007,26 @@ function renderGame() {
   count.hidden = S.phase !== 'countdown';
   if (S.phase === 'countdown') count.textContent = Math.max(1, Math.ceil((S.countEnd - performance.now()) / 1000));
   $('tools').hidden = S.phase !== 'playing';
+  $('undo').hidden = shared;
+  $('clear').hidden = shared;
   $('undo').disabled = !S.undo.length;
   $('clear').disabled = !S.rects.length;
   if (S.phase === 'done') {
     const win = winnerOf();
-    $('timer').textContent = fmt(win ? win.ms : S.finalMs);
+    $('timer').textContent = fmt(shared ? endTime() : win ? win.ms : S.finalMs);
   }
+  renderFlash();
   renderVerdict();
   renderLanes();
+}
+
+function laneColors() {
+  const rows = [...S.roster.values()].sort((a, b) => (a.peer < b.peer ? -1 : 1));
+  return new Map(rows.map((r, i) => [r.peer, PALETTE[i % PALETTE.length]]));
+}
+function claimOwners() {
+  const colors = new Map([...laneColors()].map(([peer, color]) => [tagOf(peer), color]));
+  return [...S.claims].sort((a, b) => a[0] - b[0]).map(([i, c]) => ({ i, color: colors.get(c.tag) || '#8a8d93' }));
 }
 
 function renderVerdict() {
@@ -870,7 +1034,12 @@ function renderVerdict() {
   const over = roundOver(), win = winnerOf();
   if (over) {
     v.hidden = false;
-    if (win) {
+    if (isShared()) {
+      const top = leaders(), total = S.puzzle.n * S.puzzle.n;
+      const area = top.length ? areaByTag().get(tagOf(top[0].peer)) : 0;
+      head.textContent = !top.length ? 'No winner' : top.length > 1 ? "It's a tie" : top[0].me ? 'You win' : `${top[0].name} wins`;
+      sub.textContent = top.length ? `${area} of ${total} squares in ${fmt(endTime())}` : 'Nobody claimed a rectangle.';
+    } else if (win) {
       head.textContent = win.me ? 'You win' : `${win.name} wins`;
       const rest = [...S.roster.values()].length > 1 ? 'Winning time ' : 'Your time ';
       sub.textContent = rest + fmt(win.ms);
@@ -893,10 +1062,14 @@ function renderVerdict() {
 
 function renderLanes() {
   const ul = $('lanes');
-  const rows = [...S.roster.values()].sort((a, b) => (a.peer < b.peer ? -1 : 1));
-  const colors = new Map(rows.map((r, i) => [r.peer, PALETTE[i % PALETTE.length]]));
+  const rows = [...S.roster.values()];
+  const colors = laneColors();
   const win = winnerOf();
+  const shared = isShared(), over = roundOver(), areas = shared ? areaByTag() : null;
+  const areaOf = r => areas.get(tagOf(r.peer)) || 0;
+  const top = shared ? leaders() : [];
   rows.sort((a, b) => {
+    if (shared && over && areaOf(a) !== areaOf(b)) return areaOf(b) - areaOf(a);
     if (a.ms != null && b.ms != null) return a.ms - b.ms;
     if (a.ms != null) return -1;
     if (b.ms != null) return 1;
@@ -910,15 +1083,18 @@ function renderLanes() {
       li.dataset.peer = r.peer;
       li.innerHTML = '<div class="lane-head"><span class="chip"></span><span class="pname"></span><span class="you" hidden>you</span><span class="lane-tag" hidden>WINNER</span><span class="lane-val"></span></div><div class="track"><div class="fill"></div></div>';
     }
-    const isWin = win && win.peer === r.peer;
+    const isWin = shared ? top.includes(r) : win && win.peer === r.peer;
     li.className = 'lane' + (isWin ? ' winner' : '') + (r.left && r.ms == null ? ' gone' : '') + (r.gaveUp ? ' quit' : '');
     li.querySelector('.chip').style.background = colors.get(r.peer);
     li.querySelector('.pname').textContent = r.name;
     li.querySelector('.you').hidden = !r.me;
     li.querySelector('.lane-tag').hidden = !isWin;
-    li.querySelector('.lane-val').textContent = r.ms != null ? fmt(r.ms) : r.gaveUp ? 'gave up' : r.left ? 'left' : Math.round(r.pct) + '%';
+    li.querySelector('.lane-tag').textContent = top.length > 1 ? 'TIED' : 'WINNER';
+    li.querySelector('.lane-val').textContent = shared
+      ? `${areaOf(r)}${r.gaveUp ? ' · gave up' : r.left ? ' · left' : ''}`
+      : r.ms != null ? fmt(r.ms) : r.gaveUp ? 'gave up' : r.left ? 'left' : Math.round(r.pct) + '%';
     const fill = li.querySelector('.fill');
-    fill.style.width = (r.ms != null ? 100 : r.pct) + '%';
+    fill.style.width = (shared ? areaOf(r) / (S.puzzle.n * S.puzzle.n) * 100 : r.ms != null ? 100 : r.pct) + '%';
     fill.style.background = colors.get(r.peer);
     return li;
   });
