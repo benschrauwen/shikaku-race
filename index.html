@@ -1,0 +1,1076 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Shikaku Race</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..900&family=DM+Mono:wght@500&display=swap">
+<style>
+/* Layout concept: a solved Shikaku is a Mondrian. The board is a paper object in black line and primaries; the race runs beside it as stacked lanes. */
+:root {
+  --bg: #e6e7e3; --fg: #15161a; --muted: #565a60; --rule: #15161a; --track: #cfd1cb; --surface: #f5f5f0; --focus: #0b4ea2;
+  --paper: #f5f5f0; --ink: #111216; --line: #d3d4cd; --red: #d52b1e; --blue: #1450a8; --yellow: #f6c700;
+  --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --mono: "DM Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #15161b; --fg: #eeeee8; --muted: #a1a4aa; --rule: #eeeee8; --track: #2f3138; --surface: #1f2026; --focus: #7fb0ff; color-scheme: dark;
+} }
+:root[data-theme="dark"] {
+  --bg: #15161b; --fg: #eeeee8; --muted: #a1a4aa; --rule: #eeeee8; --track: #2f3138; --surface: #1f2026; --focus: #7fb0ff; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 400 15px/1.45 var(--display); }
+#app {
+  max-width: 1120px; margin: 0 auto; padding-block: 20px 32px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+h1, h2, p { margin: 0; }
+button, input { font: inherit; color: inherit; }
+:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+
+.btn { border: 3px solid var(--rule); background: transparent; padding: 8px 14px; font-weight: 700; cursor: pointer; border-radius: 0; }
+.btn:hover:not(:disabled) { background: var(--track); }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn.primary { background: var(--yellow); color: var(--ink); font-stretch: 112%; font-weight: 800; }
+.btn.primary:hover:not(:disabled) { background: #ffd92e; }
+.btn.big { width: 100%; padding: 16px; font-size: 22px; letter-spacing: .02em; }
+.btn.is-ready { background: transparent; color: var(--fg); }
+
+.label { font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+
+/* lobby */
+#lobby { display: grid; gap: 24px; }
+.mast { font-size: clamp(44px, 10.5vw, 112px); line-height: .9; font-weight: 900; font-stretch: 125%; letter-spacing: -.02em; text-wrap: balance; }
+.lobby-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 340px); gap: 32px; align-items: start; }
+.controls { display: grid; gap: 20px; min-width: 0; }
+.field { display: grid; gap: 6px; }
+.field input { border: 3px solid var(--rule); background: var(--surface); padding: 9px 12px; font-weight: 600; width: 100%; border-radius: 0; }
+.room-row { display: flex; gap: 8px; }
+.room-row input { flex: 1; min-width: 0; font: 500 18px var(--mono); letter-spacing: .08em; }
+.room-row .btn { flex: none; }
+.sizes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.sizes button { border: 3px solid var(--rule); margin-left: -3px; background: transparent; padding: 8px 6px; cursor: pointer; display: grid; gap: 0; }
+.sizes button:first-child { margin-left: 0; }
+.sizes button b { font-weight: 800; }
+.sizes button span { font: 500 12px var(--mono); color: var(--muted); }
+.sizes button[aria-pressed="true"] { background: var(--blue); color: #fff; }
+.sizes button[aria-pressed="true"] span { color: #fff; }
+.sizes button:disabled { cursor: default; }
+.players { list-style: none; margin: 0; padding: 0; border-top: 3px solid var(--rule); }
+.player { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--rule); }
+.chip { width: 14px; height: 14px; flex: none; }
+.pname { font-weight: 700; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.you { font: 500 12px var(--mono); color: var(--muted); flex: none; }
+.state { margin-left: auto; flex: none; font-size: 12px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; padding: 3px 8px; color: var(--muted); border: 2px solid transparent; }
+.state.on { background: var(--yellow); color: var(--ink); }
+.state.racing { border-color: var(--rule); color: var(--fg); font-family: var(--mono); font-weight: 500; }
+.status { min-height: 1.45em; font-weight: 600; }
+.note { padding: 10px 12px; background: var(--surface); border: 2px solid var(--rule); }
+.how { display: grid; gap: 12px; min-width: 0; }
+.how p { color: var(--muted); }
+.how strong { color: var(--fg); }
+
+/* board */
+.board {
+  position: relative; display: grid; aspect-ratio: 1; width: 100%; container-type: inline-size;
+  grid-template-columns: repeat(var(--n), minmax(0, 1fr)); grid-template-rows: repeat(var(--n), minmax(0, 1fr));
+  background-color: var(--paper); border: 5px solid var(--ink); color: var(--ink);
+  background-image: linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px);
+  background-size: calc(100% / var(--n)) calc(100% / var(--n));
+}
+.board.live { touch-action: none; user-select: none; -webkit-user-select: none; cursor: crosshair; }
+.rect { position: relative; }
+.rect.valid { border: clamp(2px, .55cqw, 5px) solid var(--ink); background: var(--paper); }
+.rect.valid.red { background: var(--red); }
+.rect.valid.blue { background: var(--blue); }
+.rect.valid.yellow { background: var(--yellow); }
+.rect.bad {
+  border: 2px dashed var(--ink);
+  background: repeating-linear-gradient(45deg, transparent 0 5px, rgba(17, 18, 22, .16) 5px 7px);
+}
+.clue {
+  z-index: 2; display: grid; place-items: center; pointer-events: none;
+  font: 500 calc(58cqw / var(--n)) / 1 var(--mono); color: var(--ink);
+}
+.clue.light { color: #fff; }
+.preview {
+  z-index: 3; display: grid; place-items: center; overflow: hidden; pointer-events: none;
+  border: 3px solid var(--blue); background: rgba(20, 80, 168, .18); color: var(--blue);
+  font: 500 calc(40cqw / var(--n)) / 1 var(--mono);
+}
+.cursor { z-index: 4; pointer-events: none; outline: 3px solid var(--focus); outline-offset: -3px; }
+.board:not(:focus-visible) .cursor { display: none; }
+.board:focus-visible { outline-offset: 3px; }
+
+/* race */
+#game { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 24px; align-items: start; }
+.board-col { display: grid; gap: 10px; min-width: 0; justify-items: center; }
+.board-wrap { position: relative; width: min(100%, calc(100dvh - 110px)); min-width: min(100%, 300px); }
+.count {
+  position: absolute; inset: 0; z-index: 5; display: grid; place-items: center; color: var(--ink);
+  font-size: clamp(90px, 28vw, 220px); font-weight: 900; font-stretch: 125%;
+}
+.tools { display: flex; flex-wrap: wrap; gap: 8px; width: min(100%, calc(100dvh - 110px)); }
+.tools .spacer { flex: 1; }
+.panel { display: grid; gap: 14px; min-width: 0; }
+.timer { font: 500 clamp(44px, 6vw, 60px) / 1 var(--mono); font-variant-numeric: tabular-nums; }
+.lanes { list-style: none; margin: 0; padding: 0; border-top: 3px solid var(--rule); }
+.lane { display: grid; gap: 6px; padding: 10px 8px; border-bottom: 1px solid var(--rule); }
+.lane-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.lane-val { margin-left: auto; flex: none; font: 500 14px var(--mono); font-variant-numeric: tabular-nums; }
+.lane-tag { flex: none; background: var(--ink); color: var(--yellow); font-size: 11px; font-weight: 800; letter-spacing: .08em; padding: 1px 6px; }
+.track { height: 14px; background: var(--track); }
+.fill { height: 100%; width: 0; transition: width .25s ease-out; }
+.lane.winner { background: var(--yellow); color: var(--ink); border-bottom-color: var(--ink); }
+.lane.winner .you { color: var(--ink); }
+.lane.winner .track { background: rgba(17, 18, 22, .2); }
+.lane.gone .pname { text-decoration: line-through; }
+.lane.gone, .lane.quit { color: var(--muted); }
+.verdict { display: grid; gap: 2px; }
+.verdict h2 { font-size: clamp(30px, 4vw, 40px); line-height: 1; font-weight: 900; font-stretch: 118%; overflow-wrap: anywhere; text-wrap: balance; }
+.verdict p { font-weight: 600; }
+
+@media (max-width: 820px) {
+  #game { grid-template-columns: minmax(0, 1fr); }
+  .panel { order: -1; }
+  .lobby-grid { grid-template-columns: minmax(0, 1fr); }
+  .board-wrap, .tools { width: 100%; }
+  .lane { padding-block: 6px; gap: 3px; }
+  .track { height: 10px; }
+}
+@media (prefers-reduced-motion: reduce) { .fill { transition: none; } }
+</style>
+</head>
+<body>
+<main id="app">
+  <section id="lobby" aria-labelledby="mast">
+    <h1 class="mast" id="mast">Shikaku Race</h1>
+    <div class="lobby-grid">
+      <div class="controls">
+        <form class="field" id="room-form">
+          <label class="label" for="room">Room code</label>
+          <div class="room-row">
+            <input id="room" maxlength="12" autocomplete="off" autocapitalize="off" spellcheck="false">
+            <button class="btn" id="join" type="submit" hidden>Join</button>
+            <button class="btn" id="copy" type="button">Copy link</button>
+          </div>
+        </form>
+        <div class="field">
+          <label class="label" for="name">Your name</label>
+          <input id="name" maxlength="20" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="field">
+          <span class="label" id="size-label">Board (shared with the room)</span>
+          <div class="sizes" id="sizes" role="group" aria-labelledby="size-label"></div>
+        </div>
+        <div class="field">
+          <span class="label">In the room</span>
+          <ul class="players" id="players"></ul>
+        </div>
+        <button class="btn primary big" id="ready" disabled>Connecting</button>
+        <p class="status" id="status" aria-live="polite"></p>
+        <p class="note" id="note" hidden></p>
+      </div>
+      <aside class="how">
+        <div class="board" id="demo" aria-hidden="true"></div>
+        <p><strong>Split the grid into rectangles.</strong> Each rectangle holds exactly one number, and its area equals that number. Drag to draw. Tap a rectangle to remove it.</p>
+        <p>Everyone gets the same puzzle when everyone is ready. You see each other's progress, never each other's boards.</p>
+      </aside>
+    </div>
+  </section>
+
+  <section id="game" hidden>
+    <div class="board-col">
+      <div class="board-wrap">
+        <div class="board" id="board" tabindex="0" role="application"
+             aria-label="Shikaku board. Arrow keys move, Space starts and ends a rectangle, Delete removes one, Z undoes."></div>
+        <div class="count" id="count" hidden></div>
+      </div>
+      <div class="tools" id="tools">
+        <button class="btn" id="undo">Undo</button>
+        <button class="btn" id="clear">Clear</button>
+        <span class="spacer"></span>
+        <button class="btn" id="quit">Give up</button>
+      </div>
+    </div>
+    <aside class="panel">
+      <div class="verdict" id="verdict" aria-live="polite" hidden>
+        <h2 id="verdict-head"></h2>
+        <p id="verdict-sub"></p>
+      </div>
+      <div class="timer" id="timer" role="timer">0:00.0</div>
+      <ul class="lanes" id="lanes"></ul>
+      <button class="btn primary" id="again" hidden>Play again</button>
+    </aside>
+  </section>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.5/dist/peerjs.min.js"></script>
+<script>
+// --- puzzle ---
+// Everything here is deterministic from (seed, n): every player must build the identical board.
+const SIZES = [
+  { n: 7, label: 'Quick', area: 10 },
+  { n: 10, label: 'Standard', area: 14 },
+  { n: 14, label: 'Long', area: 18 },
+];
+
+function rng32(a) {
+  return () => {
+    a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+function carve(n, rand, maxArea) {
+  const used = new Uint8Array(n * n), rects = [];
+  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) {
+    if (used[r * n + c]) continue;
+    let maxW = 0;
+    while (c + maxW < n && !used[r * n + c + maxW]) maxW++;
+    const options = [];
+    let total = 0;
+    for (let w = 1; w <= maxW; w++) for (let h = 1; r + h <= n; h++) {
+      const a = w * h;
+      if (a > maxArea) break;
+      if (a < 2) continue;
+      const weight = (a >= 4 ? 3 : 1) * (Math.max(w, h) > 5 ? .3 : 1);
+      options.push({ w, h, weight });
+      total += weight;
+    }
+    let pick = { w: 1, h: 1 };
+    let roll = rand() * total;
+    for (const o of options) { pick = o; roll -= o.weight; if (roll <= 0) break; }
+    for (let y = r; y < r + pick.h; y++) for (let x = c; x < c + pick.w; x++) used[y * n + x] = 1;
+    rects.push({ r1: r, c1: c, r2: r + pick.h - 1, c2: c + pick.w - 1 });
+  }
+  // Carving row by row favours the top left, so mirror half the boards.
+  const flipR = rand() < .5, flipC = rand() < .5;
+  return rects.map(q => ({
+    r1: flipR ? n - 1 - q.r2 : q.r1, r2: flipR ? n - 1 - q.r1 : q.r2,
+    c1: flipC ? n - 1 - q.c2 : q.c1, c2: flipC ? n - 1 - q.c1 : q.c2,
+  }));
+}
+
+// Counts solutions up to `limit`. Spends at most `budget` search nodes, so the answer never depends on machine speed.
+function countSolutions(n, clues, limit, budget) {
+  const owner = new Int16Array(n * n).fill(-1);
+  clues.forEach((k, i) => { owner[k.r * n + k.c] = i; });
+  const cand = clues.map((k, i) => {
+    const list = [];
+    for (let w = 1; w <= k.a; w++) {
+      if (k.a % w || w > n || k.a / w > n) continue;
+      const h = k.a / w;
+      for (let r = Math.max(0, k.r - h + 1); r <= Math.min(k.r, n - h); r++)
+        for (let c = Math.max(0, k.c - w + 1); c <= Math.min(k.c, n - w); c++) {
+          const cells = [];
+          let ok = true;
+          for (let y = r; y < r + h && ok; y++) for (let x = c; x < c + w; x++) {
+            const o = owner[y * n + x];
+            if (o !== -1 && o !== i) { ok = false; break; }
+            cells.push(y * n + x);
+          }
+          if (ok) list.push(cells);
+        }
+    }
+    return list;
+  });
+  const cover = new Uint8Array(n * n), done = new Uint8Array(clues.length);
+  let found = 0, nodes = 0;
+  (function search(left) {
+    if (found >= limit || ++nodes > budget) return;
+    if (!left) { found++; return; }
+    const reach = new Uint16Array(n * n);
+    let best = null, bestAt = -1;
+    for (let i = 0; i < clues.length; i++) {
+      if (done[i]) continue;
+      const fit = cand[i].filter(cells => cells.every(x => !cover[x]));
+      if (!fit.length) return;
+      for (const cells of fit) for (const x of cells) reach[x]++;
+      if (!best || fit.length < best.length) { best = fit; bestAt = i; }
+    }
+    for (let x = 0; x < n * n; x++) if (!cover[x] && !reach[x]) return;
+    done[bestAt] = 1;
+    for (const cells of best) {
+      for (const x of cells) cover[x] = 1;
+      search(left - 1);
+      for (const x of cells) cover[x] = 0;
+    }
+    done[bestAt] = 0;
+  })(clues.length);
+  return { found, complete: nodes <= budget };
+}
+
+function generate(seed, n) {
+  const rand = rng32(seed), maxArea = (SIZES.find(s => s.n === n) || { area: Math.max(6, n + 2) }).area;
+  let last = null;
+  for (let attempt = 0; attempt < 400; attempt++) {
+    const solution = carve(n, rand, maxArea);
+    for (let tries = 0; tries < 4; tries++) {
+      const clues = solution.map(q => {
+        const h = q.r2 - q.r1 + 1, w = q.c2 - q.c1 + 1;
+        return { r: q.r1 + Math.floor(rand() * h), c: q.c1 + Math.floor(rand() * w), a: w * h };
+      });
+      last = { n, seed, clues, solution, unique: false };
+      const res = countSolutions(n, clues, 2, 4000);
+      if (res.complete && res.found === 1) { last.unique = true; return last; }
+    }
+  }
+  return last; // Still fair: any valid split wins, not one fixed answer.
+}
+
+function isValid(puz, q) {
+  const area = (q.r2 - q.r1 + 1) * (q.c2 - q.c1 + 1);
+  const inside = puz.clues.filter(k => k.r >= q.r1 && k.r <= q.r2 && k.c >= q.c1 && k.c <= q.c2);
+  return inside.length === 1 && inside[0].a === area;
+}
+
+function progressOf(puz, rects) {
+  let cells = 0;
+  for (const q of rects) if (isValid(puz, q)) cells += (q.r2 - q.r1 + 1) * (q.c2 - q.c1 + 1);
+  return Math.floor(cells / (puz.n * puz.n) * 100);
+}
+
+function fmt(ms) {
+  const t = Math.floor(ms / 100), m = Math.floor(t / 600), s = Math.floor(t / 10) % 60;
+  return m + ':' + String(s).padStart(2, '0') + '.' + t % 10;
+}
+
+// --- network ---
+// Players form a full WebRTC mesh; each one shares its state with every other directly.
+// A public PeerJS broker only introduces browsers to each other. One player also holds a
+// well-known "anchor" id derived from the room code, and hands newcomers the list of members.
+// If that player leaves, another one claims the anchor, so the room never depends on anybody.
+const LINK_TIMEOUT = 9000, BEAT = 3000;
+
+function meshNet(code) {
+  return new Promise(resolve => {
+    if (!window.Peer) return resolve(null);
+    const anchorId = 'shikaku-race-' + code;
+    const links = new Map(); // peer id -> { conn, presence, seen }
+    const dialing = new Set();
+    let mine = {}, cb = () => {}, selfId = null, sendQueued = false;
+    let anchor = null, members = new Map(), anchorLink = null, anchorSeen = 0, claiming = false;
+
+    const emit = () => cb([
+      { peer: selfId, sameTab: true, kind: 'viewer', presence: mine },
+      ...[...links].map(([peer, l]) => ({ peer, sameTab: false, kind: 'viewer', presence: l.presence })),
+    ]);
+    const broadcast = () => {
+      sendQueued = false;
+      for (const l of links.values()) if (l.conn.open) l.conn.send({ presence: mine });
+    };
+    const drop = id => {
+      const l = links.get(id);
+      dialing.delete(id);
+      if (!l) return;
+      links.delete(id);
+      l.conn.close();
+      emit();
+    };
+
+    function wire(conn) {
+      conn.on('open', () => {
+        dialing.delete(conn.peer);
+        links.set(conn.peer, { conn, presence: {}, seen: Date.now() });
+        conn.send({ presence: mine });
+        emit();
+      });
+      conn.on('data', d => {
+        const l = links.get(conn.peer);
+        if (!l) return;
+        l.seen = Date.now();
+        if (d && d.bye) return drop(conn.peer);
+        if (d && typeof d === 'object' && d.presence && typeof d.presence === 'object' && JSON.stringify(d.presence).length <= 4096) {
+          l.presence = d.presence;
+          emit();
+        }
+      });
+      const gone = () => { if (links.get(conn.peer)?.conn === conn) drop(conn.peer); else dialing.delete(conn.peer); };
+      conn.on('close', gone);
+      conn.on('error', gone);
+    }
+
+    // Only the lower id dials, so a pair never opens two connections.
+    function dialAll(ids) {
+      for (const id of ids) {
+        if (id <= selfId || links.has(id) || dialing.has(id)) continue;
+        dialing.add(id);
+        wire(self.connect(id, { reliable: true }));
+        setTimeout(() => dialing.delete(id), 8000);
+      }
+    }
+
+    function shareMembers() {
+      const ids = [selfId, ...members.keys()];
+      for (const c of members.values()) if (c.open) c.send({ members: ids });
+      dialAll(ids);
+    }
+
+    function claimAnchor() {
+      if (anchor || anchorLink || claiming) return;
+      claiming = true;
+      const a = new Peer(anchorId);
+      a.on('disconnected', () => { if (!a.destroyed) a.reconnect(); });
+      a.on('open', () => {
+        claiming = false;
+        anchor = a;
+        members = new Map();
+        a.on('connection', c => {
+          c.on('open', () => { c.seen = Date.now(); members.set(c.peer, c); shareMembers(); });
+          c.on('data', () => { c.seen = Date.now(); });
+          const gone = () => { if (members.get(c.peer) === c) { members.delete(c.peer); shareMembers(); } };
+          c.on('close', gone);
+          c.on('error', gone);
+        });
+        shareMembers();
+      });
+      a.on('error', err => {
+        if (anchor === a && err.type !== 'unavailable-id') return;
+        claiming = false;
+        a.destroy();
+        if (anchor === a) anchor = null;
+        if (err.type === 'unavailable-id') joinAnchor();
+      });
+    }
+
+    function joinAnchor() {
+      if (anchorLink || anchor) return;
+      const c = self.connect(anchorId, { reliable: true });
+      anchorLink = c;
+      anchorSeen = Date.now();
+      c.on('data', d => {
+        anchorSeen = Date.now();
+        if (d && Array.isArray(d.members)) dialAll(d.members.filter(x => typeof x === 'string'));
+      });
+      const gone = () => { if (anchorLink === c) anchorLink = null; };
+      c.on('close', gone);
+      c.on('error', gone);
+      setTimeout(() => { if (anchorLink === c && !c.open) { c.close(); gone(); } }, 8000);
+    }
+
+    const self = new Peer();
+    const net = {
+      kind: 'room',
+      presence(patch) {
+        for (const k in patch) if (patch[k] === null) delete mine[k]; else mine[k] = patch[k];
+        emit();
+        if (!sendQueued) { sendQueued = true; setTimeout(broadcast, 30); }
+      },
+      listen(onPeers) { cb = onPeers; emit(); },
+    };
+    const failed = setTimeout(() => { self.destroy(); resolve(null); }, 10000);
+    self.on('open', id => {
+      clearTimeout(failed);
+      selfId = id;
+      claimAnchor();
+      setInterval(() => {
+        for (const [id, l] of links) if (Date.now() - l.seen > LINK_TIMEOUT) drop(id);
+        for (const l of links.values()) if (l.conn.open) l.conn.send({ beat: 1 });
+        if (self.disconnected && !self.destroyed) self.reconnect();
+        // A closed tab may never fire 'close', so both ends of the anchor link watch for silence.
+        if (anchor) {
+          for (const [id, c] of members) if (Date.now() - c.seen > LINK_TIMEOUT) { members.delete(id); c.close(); }
+          shareMembers();
+        }
+        if (anchorLink && anchorLink.open) anchorLink.send({ beat: 1 });
+        if (anchorLink && Date.now() - anchorSeen > LINK_TIMEOUT) { anchorLink.close(); anchorLink = null; }
+        if (!anchor && !anchorLink) setTimeout(claimAnchor, Math.random() * 1000);
+      }, BEAT);
+      resolve(net);
+    });
+    self.on('connection', wire);
+    self.on('error', err => {
+      // The anchor vanished between the claim and the dial; the beat above claims again.
+      if (err.type === 'peer-unavailable' && String(err.message).includes(anchorId)) anchorLink = null;
+    });
+    window.addEventListener('pagehide', () => {
+      for (const l of links.values()) if (l.conn.open) l.conn.send({ bye: 1 });
+      self.destroy();
+      if (anchor) anchor.destroy();
+    });
+  });
+}
+
+function soloNet() {
+  const me = { peer: 'me', sameTab: true, kind: 'viewer', presence: {} };
+  let cb = () => {};
+  return {
+    kind: 'solo',
+    presence(patch) { me.presence = { ...me.presence, ...patch }; setTimeout(() => cb([me])); },
+    listen(onPeers) { cb = onPeers; },
+  };
+}
+
+// --- game state ---
+const PALETTE = ['#1d62c4', '#d52b1e', '#e0b400', '#1f8a5b', '#7a3e9d', '#e8762b', '#0e9aa7', '#c2317e'];
+const $ = id => document.getElementById(id);
+const S = {
+  net: null, noRoomReason: null, settled: 0, code: '',
+  peers: [], selfPeer: null,
+  name: '', ready: false, phase: 'lobby', away: document.hidden,
+  size: 10, sizeAt: 0,
+  game: null, puzzle: null, rects: [], undo: [], pct: 0, ms: null, gaveUp: false,
+  countEnd: 0, t0: 0, roster: new Map(), hostTimer: null, ticker: null, finalMs: 0,
+  drag: null, cursor: { r: 0, c: 0 }, anchor: null,
+};
+
+function publish() {
+  if (!S.net) return;
+  S.net.presence({
+    name: S.name || 'Player', phase: S.phase, ready: S.ready, away: S.away, size: S.size, sizeAt: S.sizeAt,
+    game: S.game ? { id: S.game.id, seed: S.game.seed, size: S.game.size } : null,
+    pct: S.pct, ms: S.ms, gaveUp: S.gaveUp,
+  });
+}
+
+// Other players' presence is untrusted: read every field defensively.
+function readPeer(p) {
+  const x = p.presence || {}, g = x.game;
+  const phase = ['lobby', 'countdown', 'playing', 'done'].includes(x.phase) ? x.phase : null;
+  const validGame = g && typeof g === 'object' && typeof g.id === 'string' && Number.isInteger(g.seed) && SIZES.some(s => s.n === g.size);
+  return {
+    peer: p.peer, me: !!p.sameTab, phase,
+    name: (typeof x.name === 'string' && x.name.trim().slice(0, 20)) || 'Player',
+    ready: x.ready === true, away: x.away === true, gaveUp: x.gaveUp === true,
+    size: SIZES.some(s => s.n === x.size) ? x.size : 10,
+    sizeAt: Number.isFinite(x.sizeAt) ? x.sizeAt : 0,
+    game: validGame ? { id: g.id.slice(0, 80), seed: g.seed, size: g.size } : null,
+    pct: Number.isFinite(x.pct) ? Math.max(0, Math.min(100, x.pct)) : 0,
+    ms: Number.isFinite(x.ms) && x.ms > 0 ? x.ms : null,
+  };
+}
+
+function onPeers(peers) {
+  S.peers = peers.filter(p => p.kind === 'viewer').map(readPeer).filter(p => p.phase || p.me);
+  const me = S.peers.find(p => p.me);
+  if (me) S.selfPeer = me.peer;
+  syncSize();
+  considerGame();
+  syncRoster();
+  considerHosting();
+  render();
+}
+
+function syncSize() {
+  for (const p of S.peers) {
+    if (p.me || !p.phase) continue;
+    if (p.sizeAt > S.sizeAt && p.size !== S.size) { S.size = p.size; S.sizeAt = p.sizeAt; publish(); }
+    else if (p.sizeAt > S.sizeAt) S.sizeAt = p.sizeAt;
+  }
+}
+
+// Everyone not mid-race has to click Ready, except tabs in the background that have not.
+function waiters() {
+  return S.peers.filter(p => {
+    const phase = p.me ? S.phase : p.phase, ready = p.me ? S.ready : p.ready, away = p.me ? S.away : p.away;
+    return (phase === 'lobby' || phase === 'done') && (ready || !away);
+  });
+}
+function racers() {
+  return S.peers.filter(p => !p.me && (p.phase === 'playing' || p.phase === 'countdown'));
+}
+function allReady() {
+  const w = waiters();
+  if (!w.length || !w.every(p => (p.me ? S.ready : p.ready))) return false;
+  return w.length >= 2 || !racers().length;
+}
+
+function considerHosting() {
+  const wait = S.phase === 'lobby' && S.ready && allReady();
+  const host = wait && waiters().map(p => p.peer).sort()[0] === S.selfPeer;
+  if (!host) { clearTimeout(S.hostTimer); S.hostTimer = null; return; }
+  if (S.hostTimer) return;
+  // A short pause lets a late arrival in the room show up before the round is fixed.
+  S.hostTimer = setTimeout(() => {
+    S.hostTimer = null;
+    if (S.phase !== 'lobby' || !S.ready || !allReady()) return;
+    adopt({ id: S.selfPeer + '.' + Math.floor(Math.random() * 1e9).toString(36), seed: Math.floor(Math.random() * 2147483647), size: S.size });
+  }, Math.max(700, S.settled - Date.now()));
+}
+
+function considerGame() {
+  if (S.phase !== 'lobby' && S.phase !== 'countdown') return;
+  if (S.phase === 'lobby' && !S.ready) return;
+  const offers = S.peers.filter(p => !p.me && p.phase === 'countdown' && p.game).map(p => p.game);
+  if (!offers.length) return;
+  const best = offers.sort((a, b) => (a.id < b.id ? -1 : 1))[0];
+  // Two hosts can fire at once; everyone settles on the lowest id before the countdown ends.
+  if (S.phase === 'lobby' || best.id < S.game.id) adopt(best);
+}
+
+function adopt(game) {
+  clearTimeout(S.hostTimer); S.hostTimer = null;
+  const fresh = S.phase === 'lobby';
+  S.game = game;
+  S.puzzle = generate(game.seed, game.size);
+  S.rects = []; S.undo = []; S.pct = 0; S.ms = null; S.gaveUp = false; S.drag = null; S.anchor = null;
+  S.cursor = { r: 0, c: 0 };
+  S.roster = new Map();
+  S.phase = 'countdown';
+  if (fresh) S.countEnd = performance.now() + 3000;
+  S.ready = false;
+  clearInterval(S.ticker);
+  S.ticker = setInterval(tick, 100);
+  publish();
+  syncRoster();
+  render();
+}
+
+function tick() {
+  if (S.phase === 'countdown') {
+    if (performance.now() >= S.countEnd) {
+      S.phase = 'playing';
+      S.t0 = performance.now();
+      publish();
+      render();
+      $('board').focus({ preventScroll: true });
+    } else {
+      $('count').textContent = Math.ceil((S.countEnd - performance.now()) / 1000);
+    }
+  }
+  if (S.phase === 'playing') $('timer').textContent = fmt(performance.now() - S.t0);
+}
+
+function syncRoster() {
+  if (!S.game) return;
+  const seen = new Set();
+  for (const p of S.peers) {
+    if (p.me || !p.game || p.game.id !== S.game.id) continue;
+    seen.add(p.peer);
+    S.roster.set(p.peer, { peer: p.peer, name: p.name, pct: p.pct, ms: p.ms, gaveUp: p.gaveUp, left: false, me: false });
+  }
+  for (const r of S.roster.values()) if (!r.me && !seen.has(r.peer)) r.left = true;
+  if (S.selfPeer) S.roster.set(S.selfPeer, { peer: S.selfPeer, name: S.name || 'Player', pct: S.pct, ms: S.ms, gaveUp: S.gaveUp, left: false, me: true });
+}
+
+function roundOver() {
+  if (!S.game) return false;
+  return [...S.roster.values()].every(r => r.ms != null || r.gaveUp || r.left);
+}
+function winnerOf() {
+  const done = [...S.roster.values()].filter(r => r.ms != null).sort((a, b) => a.ms - b.ms || (a.peer < b.peer ? -1 : 1));
+  return done[0] || null;
+}
+
+function afterEdit() {
+  const pct = progressOf(S.puzzle, S.rects);
+  const changed = pct !== S.pct;
+  S.pct = pct;
+  if (pct === 100) {
+    S.ms = Math.max(1, Math.round(performance.now() - S.t0));
+    S.finalMs = S.ms;
+    S.phase = 'done';
+    S.drag = null; S.anchor = null;
+    publish();
+  } else if (changed) publish();
+  syncRoster();
+  render();
+}
+
+function place(a, b) {
+  const q = { r1: Math.min(a.r, b.r), c1: Math.min(a.c, b.c), r2: Math.max(a.r, b.r), c2: Math.max(a.c, b.c) };
+  const single = q.r1 === q.r2 && q.c1 === q.c2;
+  const hit = S.rects.find(x => a.r >= x.r1 && a.r <= x.r2 && a.c >= x.c1 && a.c <= x.c2);
+  S.undo.push(S.rects);
+  if (single && hit) S.rects = S.rects.filter(x => x !== hit);
+  else if (single && !isValid(S.puzzle, q)) { S.undo.pop(); return; }
+  else S.rects = S.rects.filter(x => x.r2 < q.r1 || x.r1 > q.r2 || x.c2 < q.c1 || x.c1 > q.c2).concat(q);
+  afterEdit();
+}
+
+function backToLobby(ready) {
+  clearInterval(S.ticker);
+  S.game = null; S.puzzle = null; S.rects = []; S.undo = []; S.pct = 0; S.ms = null; S.gaveUp = false;
+  S.phase = 'lobby'; S.ready = ready; S.roster = new Map();
+  $('timer').textContent = '0:00.0';
+  publish();
+  render();
+}
+
+// --- drawing ---
+function fillOf(q, seed) {
+  let h = seed | 0;
+  for (const v of [q.r1, q.c1, q.r2, q.c2]) h = Math.imul(h ^ v, 0x5bd1e995) ^ h >>> 13;
+  const x = (h >>> 0) % 100;
+  return x < 58 ? '' : x < 72 ? 'red' : x < 86 ? 'blue' : 'yellow';
+}
+
+function drawBoard(el, puz, rects, showClues) {
+  el.style.setProperty('--n', puz.n);
+  const kids = [], fills = [];
+  for (const q of rects) {
+    const d = document.createElement('div');
+    const ok = isValid(puz, q), fill = ok ? fillOf(q, puz.seed) : '';
+    d.className = 'rect ' + (ok ? 'valid ' + fill : 'bad');
+    d.style.gridArea = `${q.r1 + 1}/${q.c1 + 1}/${q.r2 + 2}/${q.c2 + 2}`;
+    kids.push(d);
+    fills.push({ q, dark: ok && (fill === 'red' || fill === 'blue') });
+  }
+  if (showClues) for (const k of puz.clues) {
+    const d = document.createElement('div');
+    const cover = fills.find(f => k.r >= f.q.r1 && k.r <= f.q.r2 && k.c >= f.q.c1 && k.c <= f.q.c2);
+    d.className = 'clue' + (cover && cover.dark ? ' light' : '');
+    d.style.gridArea = `${k.r + 1}/${k.c + 1}`;
+    d.textContent = k.a;
+    kids.push(d);
+  }
+  el.replaceChildren(...kids);
+}
+
+function drawOverlay() {
+  const b = $('board');
+  b.querySelectorAll('.preview, .cursor').forEach(n => n.remove());
+  if (S.phase !== 'playing') return;
+  const a = S.drag ? S.drag.a : S.anchor, z = S.drag ? S.drag.b : S.cursor;
+  if (a) {
+    const p = document.createElement('div');
+    const r1 = Math.min(a.r, z.r), r2 = Math.max(a.r, z.r), c1 = Math.min(a.c, z.c), c2 = Math.max(a.c, z.c);
+    p.className = 'preview';
+    p.style.gridArea = `${r1 + 1}/${c1 + 1}/${r2 + 2}/${c2 + 2}`;
+    p.textContent = (r2 - r1 + 1) * (c2 - c1 + 1);
+    b.append(p);
+  }
+  const k = document.createElement('div');
+  k.className = 'cursor';
+  k.style.gridArea = `${S.cursor.r + 1}/${S.cursor.c + 1}`;
+  b.append(k);
+}
+
+function render() {
+  const inGame = !!S.game;
+  $('lobby').hidden = inGame;
+  $('game').hidden = !inGame;
+  if (inGame) renderGame(); else renderLobby();
+}
+
+function lobbyStatus() {
+  if (!S.net) return 'Connecting to the room.';
+  if (S.net.kind === 'solo') return S.ready ? 'Starting.' : 'Click Ready to start a round on your own.';
+  const others = S.peers.filter(p => !p.me);
+  if (!others.length) return S.ready ? 'Starting a round for just you.' : 'Nobody else is here yet. Send them the room link, or click Ready to play alone.';
+  const missing = waiters().filter(p => !(p.me ? S.ready : p.ready));
+  if (missing.length) {
+    const names = missing.filter(p => !p.me).map(p => p.name);
+    if (!names.length) return 'Everyone else is ready. Click Ready to start.';
+    const list = names.length > 2 ? `${names.slice(0, 2).join(', ')} and ${names.length - 2} more` : names.join(' and ');
+    return `Waiting for ${list} to click Ready.`;
+  }
+  if (!allReady()) return 'A round is running. You will start when another player joins you or it ends.';
+  return 'Everyone is ready. Starting.';
+}
+
+function renderLobby() {
+  const sizes = $('sizes');
+  if (!sizes.children.length) for (const s of SIZES) {
+    const b = document.createElement('button');
+    b.dataset.n = s.n;
+    const t = document.createElement('b'); t.textContent = s.label;
+    const u = document.createElement('span'); u.textContent = s.n + '×' + s.n;
+    b.append(t, u);
+    b.onclick = () => {
+      if (S.size === s.n) return;
+      S.size = s.n;
+      S.sizeAt = Math.max(S.sizeAt, ...S.peers.map(p => p.sizeAt)) + 1;
+      publish();
+      render();
+    };
+    sizes.append(b);
+  }
+  for (const b of sizes.children) {
+    b.setAttribute('aria-pressed', String(+b.dataset.n === S.size));
+    b.disabled = S.ready;
+  }
+  const list = [...S.peers].sort((a, b) => (a.peer < b.peer ? -1 : 1));
+  if (!list.length) list.push({ peer: 'me', me: true });
+  $('players').replaceChildren(...list.map((p, i) => {
+    const li = document.createElement('li');
+    li.className = 'player';
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.style.background = PALETTE[i % PALETTE.length];
+    const nm = document.createElement('span');
+    nm.className = 'pname';
+    nm.textContent = p.me ? (S.name || 'Player') : p.name;
+    li.append(chip, nm);
+    if (p.me) {
+      const y = document.createElement('span');
+      y.className = 'you'; y.textContent = 'you';
+      li.append(y);
+    }
+    const st = document.createElement('span');
+    const ready = p.me ? S.ready : p.ready;
+    if (!p.me && (p.phase === 'playing' || p.phase === 'countdown')) {
+      st.className = 'state racing'; st.textContent = 'racing ' + Math.round(p.pct) + '%';
+    } else if (!p.me && p.phase === 'done') {
+      st.className = 'state'; st.textContent = 'on results';
+    } else if (ready) {
+      st.className = 'state on'; st.textContent = 'Ready';
+    } else {
+      st.className = 'state'; st.textContent = !p.me && p.away ? 'Away' : 'Not ready';
+    }
+    li.append(st);
+    return li;
+  }));
+  const btn = $('ready');
+  btn.disabled = !S.net;
+  btn.textContent = !S.net ? 'Connecting' : S.ready ? 'Not ready after all' : 'Ready';
+  btn.classList.toggle('is-ready', S.ready);
+  btn.setAttribute('aria-pressed', String(S.ready));
+  $('status').textContent = lobbyStatus();
+  const note = $('note');
+  note.hidden = !S.noRoomReason;
+  note.textContent = S.noRoomReason || '';
+}
+
+function renderGame() {
+  const board = $('board');
+  const key = JSON.stringify([S.puzzle.seed, S.phase === 'countdown', S.rects]);
+  if (board.dataset.key !== key) {
+    board.dataset.key = key;
+    drawBoard(board, S.puzzle, S.rects, S.phase !== 'countdown');
+  }
+  board.classList.toggle('live', S.phase === 'playing');
+  drawOverlay();
+  const count = $('count');
+  count.hidden = S.phase !== 'countdown';
+  if (S.phase === 'countdown') count.textContent = Math.max(1, Math.ceil((S.countEnd - performance.now()) / 1000));
+  $('tools').hidden = S.phase !== 'playing';
+  $('undo').disabled = !S.undo.length;
+  $('clear').disabled = !S.rects.length;
+  if (S.phase === 'done') $('timer').textContent = fmt(S.finalMs);
+  renderVerdict();
+  renderLanes();
+}
+
+function renderVerdict() {
+  const v = $('verdict'), head = $('verdict-head'), sub = $('verdict-sub'), again = $('again');
+  const over = roundOver(), win = winnerOf();
+  const mine = S.ms != null;
+  if (over) {
+    v.hidden = false;
+    if (win) {
+      head.textContent = win.me ? 'You win' : `${win.name} wins`;
+      const rest = [...S.roster.values()].length > 1 ? 'Winning time ' : 'Your time ';
+      sub.textContent = rest + fmt(win.ms);
+    } else {
+      head.textContent = 'No winner';
+      sub.textContent = 'Nobody finished this board.';
+    }
+    again.hidden = false;
+    again.textContent = 'Play again';
+  } else if (S.phase === 'done') {
+    const left = [...S.roster.values()].filter(r => r.ms == null && !r.gaveUp && !r.left).length;
+    v.hidden = false;
+    head.textContent = mine ? (win && win.me ? 'You finished first' : 'Finished') : 'You gave up';
+    sub.textContent = `${win && !win.me ? win.name + ' won in ' + fmt(win.ms) + '. ' : ''}Still solving: ${left}.`;
+    again.hidden = false;
+    again.textContent = 'Back to lobby';
+  } else if (win) {
+    v.hidden = false;
+    head.textContent = `${win.name} wins`;
+    sub.textContent = `${fmt(win.ms)}. Finish to set your own time.`;
+    again.hidden = true;
+  } else {
+    v.hidden = true;
+    again.hidden = true;
+  }
+}
+
+function renderLanes() {
+  const ul = $('lanes');
+  const rows = [...S.roster.values()].sort((a, b) => (a.peer < b.peer ? -1 : 1));
+  const colors = new Map(rows.map((r, i) => [r.peer, PALETTE[i % PALETTE.length]]));
+  const win = winnerOf();
+  rows.sort((a, b) => {
+    if (a.ms != null && b.ms != null) return a.ms - b.ms;
+    if (a.ms != null) return -1;
+    if (b.ms != null) return 1;
+    return a.peer < b.peer ? -1 : 1;
+  });
+  const have = new Map([...ul.children].map(li => [li.dataset.peer, li]));
+  const next = rows.map(r => {
+    let li = have.get(r.peer);
+    if (!li) {
+      li = document.createElement('li');
+      li.dataset.peer = r.peer;
+      li.innerHTML = '<div class="lane-head"><span class="chip"></span><span class="pname"></span><span class="you" hidden>you</span><span class="lane-tag" hidden>WINNER</span><span class="lane-val"></span></div><div class="track"><div class="fill"></div></div>';
+    }
+    const isWin = win && win.peer === r.peer;
+    li.className = 'lane' + (isWin ? ' winner' : '') + (r.left && r.ms == null ? ' gone' : '') + (r.gaveUp ? ' quit' : '');
+    li.querySelector('.chip').style.background = colors.get(r.peer);
+    li.querySelector('.pname').textContent = r.name;
+    li.querySelector('.you').hidden = !r.me;
+    li.querySelector('.lane-tag').hidden = !isWin;
+    li.querySelector('.lane-val').textContent = r.ms != null ? fmt(r.ms) : r.gaveUp ? 'gave up' : r.left ? 'left' : Math.round(r.pct) + '%';
+    const fill = li.querySelector('.fill');
+    fill.style.width = (r.ms != null ? 100 : r.pct) + '%';
+    fill.style.background = colors.get(r.peer);
+    return li;
+  });
+  ul.replaceChildren(...next);
+}
+
+// --- input ---
+function cellAt(e) {
+  const b = $('board').getBoundingClientRect(), n = S.puzzle.n;
+  const clamp = v => Math.max(0, Math.min(n - 1, v));
+  return { r: clamp(Math.floor((e.clientY - b.top) / b.height * n)), c: clamp(Math.floor((e.clientX - b.left) / b.width * n)) };
+}
+
+$('board').addEventListener('pointerdown', e => {
+  if (S.phase !== 'playing' || e.button > 0) return;
+  e.preventDefault();
+  $('board').focus({ preventScroll: true });
+  const a = cellAt(e);
+  S.drag = { id: e.pointerId, a, b: a };
+  S.anchor = null;
+  S.cursor = a;
+  drawOverlay();
+});
+window.addEventListener('pointermove', e => {
+  if (!S.drag || e.pointerId !== S.drag.id) return;
+  const z = cellAt(e);
+  if (z.r === S.drag.b.r && z.c === S.drag.b.c) return;
+  S.drag.b = z;
+  S.cursor = z;
+  drawOverlay();
+});
+window.addEventListener('pointerup', e => {
+  if (!S.drag || e.pointerId !== S.drag.id) return;
+  const { a, b } = S.drag;
+  S.drag = null;
+  if (S.phase === 'playing') place(a, b);
+  drawOverlay();
+});
+window.addEventListener('pointercancel', () => { S.drag = null; drawOverlay(); });
+
+$('board').addEventListener('keydown', e => {
+  if (S.phase !== 'playing') return;
+  const n = S.puzzle.n, moves = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] };
+  if (moves[e.key]) {
+    const [dr, dc] = moves[e.key];
+    S.cursor = { r: Math.max(0, Math.min(n - 1, S.cursor.r + dr)), c: Math.max(0, Math.min(n - 1, S.cursor.c + dc)) };
+  } else if (e.key === ' ' || e.key === 'Enter') {
+    if (S.anchor) { const a = S.anchor; S.anchor = null; place(a, S.cursor); } else S.anchor = S.cursor;
+  } else if (e.key === 'Escape') {
+    S.anchor = null;
+  } else if (e.key === 'Delete' || e.key === 'Backspace') {
+    const hit = S.rects.find(x => S.cursor.r >= x.r1 && S.cursor.r <= x.r2 && S.cursor.c >= x.c1 && S.cursor.c <= x.c2);
+    if (hit) { S.undo.push(S.rects); S.rects = S.rects.filter(x => x !== hit); afterEdit(); }
+  } else if (e.key === 'z' || e.key === 'Z') {
+    undo();
+  } else return;
+  e.preventDefault();
+  drawOverlay();
+});
+
+function undo() {
+  if (!S.undo.length) return;
+  S.rects = S.undo.pop();
+  afterEdit();
+}
+$('undo').onclick = undo;
+$('clear').onclick = () => { if (S.rects.length) { S.undo.push(S.rects); S.rects = []; afterEdit(); } };
+
+let quitArmed = null;
+$('quit').onclick = () => {
+  if (!quitArmed) {
+    $('quit').textContent = 'Really give up?';
+    quitArmed = setTimeout(() => { quitArmed = null; $('quit').textContent = 'Give up'; }, 3000);
+    return;
+  }
+  clearTimeout(quitArmed); quitArmed = null;
+  $('quit').textContent = 'Give up';
+  S.gaveUp = true;
+  S.finalMs = performance.now() - S.t0;
+  S.phase = 'done';
+  publish();
+  syncRoster();
+  render();
+};
+
+$('again').onclick = () => backToLobby(roundOver());
+$('ready').onclick = () => {
+  S.ready = !S.ready;
+  publish();
+  considerGame();
+  considerHosting();
+  render();
+};
+$('name').addEventListener('input', e => {
+  S.name = e.target.value.trim().slice(0, 20);
+  try { localStorage.setItem('shikaku-name', S.name); } catch {}
+  publish();
+  render();
+});
+document.addEventListener('visibilitychange', () => { S.away = document.hidden; publish(); });
+
+// --- start ---
+function useNet(net, reason) {
+  S.net = net;
+  S.noRoomReason = reason || null;
+  S.settled = Date.now() + (net.kind === 'room' ? 1500 : 0);
+  net.listen(onPeers);
+  publish();
+  render();
+}
+
+function cleanCode(v) {
+  return String(v).toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 12);
+}
+
+function roomCode() {
+  const fromLink = cleanCode(location.hash.slice(1));
+  if (fromLink) return fromLink;
+  const letters = 'abcdefghjkmnpqrstuvwxyz23456789';
+  const code = Array.from(crypto.getRandomValues(new Uint8Array(5)), b => letters[b % letters.length]).join('');
+  history.replaceState(null, '', '#' + code);
+  return code;
+}
+
+const hosted = location.protocol.startsWith('http');
+$('copy').hidden = !hosted;
+$('room').addEventListener('input', e => {
+  const typed = cleanCode(e.target.value);
+  $('join').hidden = !typed || typed === S.code;
+  $('copy').hidden = !hosted || !$('join').hidden;
+});
+$('room-form').addEventListener('submit', e => {
+  e.preventDefault();
+  const typed = cleanCode($('room').value);
+  if (typed && typed !== S.code) location.hash = typed;
+});
+window.addEventListener('hashchange', () => location.reload());
+$('copy').onclick = async () => {
+  try {
+    await navigator.clipboard.writeText(location.href);
+    $('copy').textContent = 'Copied';
+    setTimeout(() => { $('copy').textContent = 'Copy link'; }, 1500);
+  } catch {
+    $('room').select();
+  }
+};
+
+async function boot() {
+  let saved = '';
+  try { saved = localStorage.getItem('shikaku-name') || ''; } catch {}
+  S.name = saved || 'Player ' + (10 + Math.floor(Math.random() * 90));
+  $('name').value = S.name;
+  S.code = roomCode();
+  $('room').value = S.code;
+  const sample = generate(20261102, 7);
+  drawBoard($('demo'), sample, sample.solution, true);
+  render();
+  const mesh = await meshNet(S.code);
+  useNet(mesh || soloNet(), mesh ? null : 'Could not reach the matchmaking service, so you are playing alone. Check your connection and reload.');
+}
+boot();
+</script>
+</body>
+</html>
