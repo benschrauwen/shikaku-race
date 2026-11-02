@@ -604,11 +604,11 @@ function syncSize() {
   }
 }
 
-// Everyone not mid-race has to click Ready, except tabs in the background that have not.
+// Everyone not mid-round has to click Ready, including anyone with the page in a background tab.
 function waiters() {
   return S.peers.filter(p => {
-    const phase = p.me ? S.phase : p.phase, ready = p.me ? S.ready : p.ready, away = p.me ? S.away : p.away;
-    return (phase === 'lobby' || phase === 'done') && (ready || !away);
+    const phase = p.me ? S.phase : p.phase;
+    return phase === 'lobby' || phase === 'done';
   });
 }
 function racers() {
