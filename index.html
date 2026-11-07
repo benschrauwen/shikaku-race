@@ -60,6 +60,15 @@ button, input { font: inherit; color: inherit; }
 .sizes button[aria-pressed="true"] { background: var(--blue); color: #fff; }
 .sizes button[aria-pressed="true"] span { color: #fff; }
 .sizes button:disabled { cursor: default; }
+.sizes button.grew { animation: grow 1.6s ease-out; position: relative; }
+.sizes button.grew::after {
+  content: "+4"; position: absolute; top: -10px; right: -4px; padding: 0 5px; background: var(--yellow); color: var(--ink);
+  font: 800 12px/18px var(--display); border: 2px solid var(--ink); animation: badge 1.6s ease-out forwards;
+}
+@keyframes grow { 0% { background: var(--yellow); color: var(--ink); transform: scale(1.12); } 60% { background: var(--yellow); color: var(--ink); transform: none; } }
+@keyframes badge { 0% { opacity: 0; transform: translateY(6px); } 15%, 75% { opacity: 1; transform: none; } 100% { opacity: 0; } }
+.grow-note { color: var(--muted); font-size: 13px; }
+.grow-note:empty { display: none; }
 .players { list-style: none; margin: 0; padding: 0; border-top: 3px solid var(--rule); }
 .player { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--rule); }
 .chip { width: 14px; height: 14px; flex: none; }
@@ -149,7 +158,11 @@ button, input { font: inherit; color: inherit; }
   .lane { padding-block: 6px; gap: 3px; }
   .track { height: 10px; }
 }
-@media (prefers-reduced-motion: reduce) { .fill { transition: none; } .rect.fresh { animation: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .fill { transition: none; } .rect.fresh { animation: none; }
+  .sizes button.grew { animation: none; outline: 3px solid var(--yellow); outline-offset: -6px; }
+  .sizes button.grew::after { animation: none; }
+}
 </style>
 </head>
 <body>
@@ -177,6 +190,7 @@ button, input { font: inherit; color: inherit; }
         <div class="field">
           <span class="label" id="size-label">Board (shared with the room)</span>
           <div class="sizes" id="sizes" role="group" aria-labelledby="size-label"></div>
+          <p class="grow-note" id="grow-note" aria-live="polite"></p>
         </div>
         <div class="field">
           <span class="label">In the room</span>
@@ -231,6 +245,29 @@ const SIZES = [
   { n: 14, label: 'Long', area: 18, long: 6, modes: ['race', 'shared'] },
   { n: 18, label: 'Huge', area: 20, long: 7, modes: ['shared'] },
 ];
+
+// Boards grow: shared boards by 4 when more than 3 play, and every board by 4 for every 10 rounds
+// played in the room. Generation past 26×26 takes seconds, so growth stops once the biggest board
+// in the mode reaches it, which also keeps every board a different size.
+const GROW = 4, CROWD = 4, EVERY = 10, MAX_N = 26;
+
+function growthSteps(mode, players, rounds) {
+  const crowd = mode === 'shared' && players >= CROWD ? GROW : 0;
+  const largest = Math.max(...SIZES.filter(s => s.modes.includes(mode)).map(s => s.n)) + crowd;
+  return Math.min(Math.floor(rounds / EVERY), Math.floor((MAX_N - largest) / GROW));
+}
+
+function boardSize(base, mode, players, rounds) {
+  const crowd = mode === 'shared' && players >= CROWD ? GROW : 0;
+  return base + crowd + GROW * growthSteps(mode, players, rounds);
+}
+
+// Grown sizes borrow the rectangle limits of the nearest listed size below them.
+function paramsFor(n) {
+  if (n > 22) return { area: 24, long: 8 };
+  if (n > 18) return n === 22 ? { area: 22, long: 7 } : SIZES[SIZES.length - 1];
+  return [...SIZES].reverse().find(s => s.n <= n) || SIZES[0];
+}
 
 function rng32(a) {
   return () => {
@@ -362,7 +399,7 @@ function countSolutions(n, clues, limit, budget) {
 }
 
 function generate(seed, n) {
-  const rand = rng32(seed), size = SIZES.find(s => s.n === n) || { area: Math.max(6, n + 2), long: Math.max(3, n - 1) };
+  const rand = rng32(seed), size = paramsFor(n);
   let last = null;
   for (let attempt = 0; attempt < 400; attempt++) {
     const solution = carve(n, rand, size.area, size.long);
@@ -441,7 +478,7 @@ function meshNet(code) {
         if (!l) return;
         l.seen = Date.now();
         if (d && d.bye) return drop(conn.peer);
-        if (d && typeof d === 'object' && d.presence && typeof d.presence === 'object' && JSON.stringify(d.presence).length <= 4096) {
+        if (d && typeof d === 'object' && d.presence && typeof d.presence === 'object' && JSON.stringify(d.presence).length <= 8192) {
           l.presence = d.presence;
           emit();
         }
@@ -576,7 +613,7 @@ const S = {
   net: null, noRoomReason: null, settled: 0, code: '',
   peers: [], selfPeer: null,
   name: '', ready: false, phase: 'lobby', away: document.hidden,
-  size: 10, mode: 'race', sizeAt: 0,
+  size: 10, mode: 'race', sizeAt: 0, rounds: 0, shownSizes: new Map(),
   game: null, puzzle: null, rects: [], undo: [], pct: 0, ms: null, gaveUp: false,
   countEnd: 0, t0: 0, roster: new Map(), hostTimer: null, ticker: null, finalMs: 0,
   drag: null, cursor: { r: 0, c: 0 }, anchor: null,
@@ -587,7 +624,8 @@ function publish() {
   if (!S.net) return;
   S.net.presence({
     name: S.name || 'Player', phase: S.phase, ready: S.ready, away: S.away, size: S.size, mode: S.mode, sizeAt: S.sizeAt,
-    game: S.game ? { id: S.game.id, seed: S.game.seed, size: S.game.size, mode: S.game.mode } : null,
+    rounds: S.rounds,
+    game: S.game ? { id: S.game.id, seed: S.game.seed, size: S.game.size, n: S.game.n, mode: S.game.mode, roundNo: S.game.roundNo } : null,
     pct: S.pct, ms: S.ms, gaveUp: S.gaveUp,
     claims: isShared() ? [...S.claims].map(([i, c]) => [i, c.tag, c.t]) : null,
   });
@@ -608,7 +646,13 @@ function readPeer(p) {
       ? x.claims.slice(0, 400).filter(c => Array.isArray(c) && Number.isInteger(c[0]) && c[0] >= 0 && typeof c[1] === 'string' && Number.isFinite(c[2]) && c[2] >= 0)
       : [],
     sizeAt: Number.isFinite(x.sizeAt) ? x.sizeAt : 0,
-    game: validGame ? { id: g.id.slice(0, 80), seed: g.seed, size: g.size, mode: g.mode === 'shared' ? 'shared' : 'race' } : null,
+    rounds: Number.isInteger(x.rounds) && x.rounds >= 0 ? Math.min(x.rounds, 1e6) : 0,
+    game: validGame ? {
+      id: g.id.slice(0, 80), seed: g.seed, size: g.size,
+      n: Number.isInteger(g.n) && g.n >= g.size && g.n <= MAX_N ? g.n : g.size,
+      mode: g.mode === 'shared' ? 'shared' : 'race',
+      roundNo: Number.isInteger(g.roundNo) && g.roundNo > 0 ? Math.min(g.roundNo, 1e6) : 0,
+    } : null,
     pct: Number.isFinite(x.pct) ? Math.max(0, Math.min(100, x.pct)) : 0,
     ms: Number.isFinite(x.ms) && x.ms > 0 ? x.ms : null,
   };
@@ -619,6 +663,7 @@ function onPeers(peers) {
   const me = S.peers.find(p => p.me);
   if (me) S.selfPeer = me.peer;
   syncSize();
+  syncRounds();
   considerGame();
   mergeRemoteClaims();
   syncRoster();
@@ -646,6 +691,19 @@ function syncSize() {
   }
 }
 
+// The room's round count lives in its players' browsers. Taking the highest one seen keeps
+// everyone in step, and lets a newcomer pick up the room's history.
+function syncRounds() {
+  const top = Math.max(S.rounds, ...S.peers.filter(p => !p.me).map(p => p.rounds));
+  if (top > S.rounds) setRounds(top);
+}
+function setRounds(n) {
+  if (n <= S.rounds) return;
+  S.rounds = n;
+  try { localStorage.setItem('shikaku-rounds-' + S.code, String(n)); } catch {}
+  publish();
+}
+
 // Everyone not mid-round has to click Ready, including anyone with the page in a background tab.
 function waiters() {
   return S.peers.filter(p => {
@@ -671,7 +729,12 @@ function considerHosting() {
   S.hostTimer = setTimeout(() => {
     S.hostTimer = null;
     if (S.phase !== 'lobby' || !S.ready || !allReady()) return;
-    adopt({ id: S.selfPeer + '.' + Math.floor(Math.random() * 1e9).toString(36), seed: Math.floor(Math.random() * 2147483647), size: S.size, mode: S.mode });
+    // The host fixes the real size, and numbers the round, so every player agrees on both.
+    adopt({
+      id: S.selfPeer + '.' + Math.floor(Math.random() * 1e9).toString(36), seed: Math.floor(Math.random() * 2147483647),
+      size: S.size, n: boardSize(S.size, S.mode, waiters().length, S.rounds), mode: S.mode,
+      roundNo: S.rounds + 1,
+    });
   }, Math.max(700, S.settled - Date.now()));
 }
 
@@ -689,7 +752,7 @@ function adopt(game) {
   clearTimeout(S.hostTimer); S.hostTimer = null;
   const fresh = S.phase === 'lobby';
   S.game = game;
-  S.puzzle = generate(game.seed, game.size);
+  S.puzzle = generate(game.seed, game.n || game.size);
   S.rects = []; S.undo = []; S.pct = 0; S.ms = null; S.gaveUp = false; S.drag = null; S.anchor = null;
   S.cursor = { r: 0, c: 0 };
   S.roster = new Map();
@@ -709,6 +772,8 @@ function tick() {
     if (performance.now() >= S.countEnd) {
       S.phase = 'playing';
       S.t0 = performance.now();
+      // Counted once the round is under way, so a game dropped during the countdown never counts.
+      if (S.game.roundNo) setRounds(S.game.roundNo);
       publish();
       render();
       $('board').focus({ preventScroll: true });
@@ -967,6 +1032,43 @@ function pickerButton(group, value, label, note, choose) {
   group.append(b);
 }
 
+// Shows a size, counting up with a flash when it has grown since this player last saw it.
+function showSize(button, n) {
+  const key = S.mode + ':' + button.dataset.value, before = S.shownSizes.get(key);
+  S.shownSizes.set(key, n);
+  const span = button.querySelector('span'), label = k => k + '×' + k;
+  if (before === undefined || n <= before) {
+    if (!button.counting) span.textContent = label(n);
+    return;
+  }
+  button.classList.remove('grew');
+  void button.offsetWidth;
+  button.classList.add('grew');
+  setTimeout(() => button.classList.remove('grew'), 1700);
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) { span.textContent = label(n); return; }
+  let k = before;
+  button.counting = true;
+  const step = () => {
+    span.textContent = label(++k);
+    if (k < n) setTimeout(step, 140);
+    else button.counting = false;
+  };
+  setTimeout(step, 140);
+}
+
+function growNote(players) {
+  const notes = [];
+  if (S.mode === 'shared' && players >= CROWD) notes.push(`${players} players, so shared boards are ${GROW} bigger.`);
+  if (S.rounds > 0) {
+    const steps = growthSteps(S.mode, players, S.rounds);
+    const played = S.rounds === 1 ? '1 round' : `${S.rounds} rounds`;
+    const capped = steps < Math.floor(S.rounds / EVERY) || boardSize(Math.max(...SIZES.filter(s => s.modes.includes(S.mode)).map(s => s.n)), S.mode, players, S.rounds) + GROW > MAX_N;
+    if (capped) notes.push(`${played} played here. The boards are as big as they get.`);
+    else notes.push(`${played} played here${steps ? `, so every board has grown by ${GROW * steps}` : ''}. They grow again after ${EVERY - S.rounds % EVERY} more.`);
+  }
+  return notes.join(' ');
+}
+
 function renderLobby() {
   const sizes = $('sizes'), modes = $('modes');
   if (sizes.dataset.mode !== S.mode) {
@@ -985,10 +1087,13 @@ function renderLobby() {
       return true;
     });
   }
+  const players = waiters().length;
   for (const b of sizes.children) {
     b.setAttribute('aria-pressed', String(+b.dataset.value === S.size));
     b.disabled = S.ready;
+    showSize(b, boardSize(+b.dataset.value, S.mode, players, S.rounds));
   }
+  $('grow-note').textContent = growNote(players);
   for (const b of modes.children) {
     b.setAttribute('aria-pressed', String(b.dataset.value === S.mode));
     b.disabled = S.ready;
@@ -1301,6 +1406,7 @@ async function boot() {
   $('name').value = S.name;
   S.code = roomCode();
   $('room').value = S.code;
+  try { S.rounds = Math.max(0, parseInt(localStorage.getItem('shikaku-rounds-' + S.code), 10) || 0); } catch {}
   const sample = generate(20261102, 7);
   drawBoard($('demo'), sample, sample.solution, true);
   render();
